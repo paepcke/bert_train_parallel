@@ -9,31 +9,38 @@ Created on Jun 8, 2020
 #**********    
 
 
-from transformers import AdamW, BertForSequenceClassification
-
-import os,sys
 import ast
+import csv
+import datetime
+import os, sys
+import random
 import re
 import time
-import torch
-from torch import nn, cuda
-from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix 
-#from sklearn.metrics import accuracy_score 
-from sklearn.metrics import classification_report 
-import pandas as pd
-import numpy as np
-import random
-import tensorflow as tf
-import datetime
-from sklearn.metrics import accuracy_score
-from sklearn.metrics import matthews_corrcoef
-from bert_training.bert_fine_tuning_sentence_classification import df
-from transformers import get_linear_schedule_with_warmup
-import matplotlib.pyplot as plt
-import seaborn as sns
 
+from pandas.tests.extension.test_external_block import df
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import classification_report 
+from sklearn.metrics import confusion_matrix 
+from sklearn.metrics import matthews_corrcoef
+from sklearn.model_selection import train_test_split
+from torch import nn, cuda
+import torch
+from torch.utils.data import IterableDataset
+from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
+from transformers import AdamW, BertForSequenceClassification
+from transformers import get_linear_schedule_with_warmup
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import tensorflow as tf
+
+from bert_feeder_dataset import BertFeederDataset
+
+
+#from sklearn.metrics import accuracy_score 
+#???from bert_training.bert_fine_tuning_sentence_classification import df
 class PoliticalLeaningsAnalyst(object):
     '''
     For this task, we first want to modify the pre-trained 
@@ -78,12 +85,12 @@ class PoliticalLeaningsAnalyst(object):
         '''
         Number of epochs: 2, 3, 4 
         '''
-        self.batch_size = self.batch_size
+        self.batch_size = batch_size
         gpu_device = self.enable_GPU()
 
         # TRAINING:        
-        train_set_loader = self.load_dataset("leanings_right_sized.csv")
-        test_set_loader  = self.load_dataset("leanings_right_sized_testset.csv")
+        train_set_loader = self.load_dataset("datasets/leanings_right_sized.csv")
+        test_set_loader  = self.load_dataset("datasets/leanings_right_sized_testset.csv")
         
         (train_labels, train_input_ids, train_attention_masks) = self.init_label_info(train_set_loader)
         (train_dataloader, validation_dataloader) = \
@@ -130,17 +137,22 @@ class PoliticalLeaningsAnalyst(object):
     #-------------------
 
     def enable_GPU(self):
-        # Get the GPU device name.
-        device_name = tf.test.gpu_device_name()
 
-        # The device name should look like the following:
-        if device_name == '/device:GPU:0':
-            print('Found GPU at: {}'.format(device_name))
+        # Get the GPU device name.
+        # Could be (GPU available):
+        #   device(type='cuda', index=0)
+        # or (No GPU available):
+        #   device(type='cpu')
+
+        device_name = tf.test.gpu_device_name()
+        if len(device_name) == 0:
+            return 'cpu'
+        # Got something like: '/device:GPU:0
+        (_device_mnt, device_type, device_indx) = device_name.split(':')
+        if device_type == 'GPU':
+            return device_indx
         else:
-            raise SystemError('GPU device not found')
-        # From torch:
-        device = cuda.current_device()
-        return device
+            device = 'cpu'
 
     #------------------------------------
     # load_dataset 
@@ -192,28 +204,18 @@ class PoliticalLeaningsAnalyst(object):
         @return: (labels, input_ids, attention_masks)
         '''
         
-        labels = df.leaning.values
-        # Labels must be int-encoded:
-        for i in range(len(labels)):
-            if labels[i] == 'right':
-                labels[i] = 0
-            if labels[i] == 'left':
-                labels[i] = 1
-            if labels[i] == 'neutral':
-                labels[i] = 2
-        
         # Extract the sentences and labels of our training 
         # set as numpy ndarrays.
-        
-        labels = self.train_set.leaning.values
+        labels = df.leaning.values
         # Labels must be int-encoded:
+        label_encodings = []
         for i in range(len(labels)):
             if labels[i] == 'right':
-                labels[i] = 0
+                label_encodings.append(0)
             if labels[i] == 'left':
-                labels[i] = 1
+                label_encodings.append(1)
             if labels[i] == 'neutral':
-                labels[i] = 2
+                label_encodings.append(2)
         
         # Grab the BERT index ints version of the tokens:
         input_ids = self.train_set.ids
@@ -223,10 +225,11 @@ class PoliticalLeaningsAnalyst(object):
         
         # Create a mask of 1s for each token followed by 0s for padding
         for seq in input_ids:
-            seq_mask = [float(i>0) for i in seq]
+            #seq_mask = [float(i>0) for i in seq]
+            seq_mask = [int(i>0) for i in seq]
             attention_masks.append(seq_mask)
         
-        return (labels, input_ids, attention_masks)
+        return (label_encodings, input_ids, attention_masks)
 
     #------------------------------------
     # prepare_input_stream 
@@ -799,6 +802,8 @@ class PoliticalLeaningsAnalyst(object):
         # "123   45" with "123,45". The \1 refers to the
         # digit that matched (i.e. the capture group):
         proper_array_str = PoliticalLeaningsAnalyst.SPACE_TO_COMMA_PAT.sub(r'\1,', array_string)
+        # Remove extraneous spaces:
+        proper_array_str = re.sub('\s', '', proper_array_str)
         # Turn from a string to array:
         return np.array(ast.literal_eval(proper_array_str))
 
@@ -917,6 +922,87 @@ class PoliticalLeaningsAnalyst(object):
         # Format as hh:mm:ss
         return str(datetime.timedelta(seconds=elapsed_rounded))
 
+# --------------------- LeaningsDataset -----------
+
+class LeaningsDataset(IterableDataset):
+    '''
+    Takes path to a CSV file prepared by ****????****
+    Columns: id,advertiser,page,leaning,tokens,ids
+    Sample:
+      (10,'Biden','http://...','left',"['[CLS],'Joe','runs',...'[SEP]']",'[[114 321 ...],[4531 ...]])
+    
+    Tokens is a stringified array of array of tokens.
+    Length: sequence size (e.g. 128)
+    Length: as many are there are lines of sample ads.
+    Ids are a stringified arrays of arrays of ints. Each
+      int is an index into BERT vocab. 
+    Length: sequence size (e.g. 128)
+    '''
+
+    #------------------------------------
+    # Constructor 
+    #-------------------
+
+    def __init__(self, csv_path):
+
+        try:
+            csv_fd = open(csv_path, 'r')
+            self.reader = csv.reader(csv_fd)
+        finally:
+            csv_fd.close()
+            
+    #------------------------------------
+    # __iter__ 
+    #-------------------
+    
+    def __iter__(self):
+        return self
+
+                        
+    #------------------------------------
+    # __next__ 
+    #-------------------
+ 
+    def __next__(self):
+        row = next(self.reader)
+        ids = row['ids']
+        
+            
+            
+        reader = pd.read_csv(csv_path,
+                         delimiter=',', 
+                         header=0, 
+                         converters={'ids' : self.to_np_array}
+                        )
+        
+        
+        # Extract the sentences and labels of our training 
+        # set as numpy ndarrays.
+        labels = df.leaning.values
+        # Labels must be int-encoded:
+        label_encodings = []
+        for i in range(len(labels)):
+            if labels[i] == 'right':
+                label_encodings.append(0)
+            if labels[i] == 'left':
+                label_encodings.append(1)
+            if labels[i] == 'neutral':
+                label_encodings.append(2)
+        
+        # Grab the BERT index ints version of the tokens:
+        input_ids = self.train_set.ids
+        
+        # Create attention masks
+        attention_masks = []
+        
+        # Create a mask of 1s for each token followed by 0s for padding
+        for seq in input_ids:
+            #seq_mask = [float(i>0) for i in seq]
+            seq_mask = [int(i>0) for i in seq]
+            attention_masks.append(seq_mask)
+        
+        return (label_encodings, input_ids, attention_masks)
+        
 # -------------------- Main ----------------
 if __name__ == '__main__':
-    pass
+    PoliticalLeaningsAnalyst('/Users/paepcke/tmp/testModel.sav')

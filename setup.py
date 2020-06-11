@@ -22,7 +22,6 @@ setup(
                         'scikit-learn>=0.23.1',
                         'pytorch-pretrained-bert>=0.6.2',
                         'pandas>=1.0.4',
-                        #'pandas>=0.24.2',
                         'matplotlib>=3.2.1',
                         'portpicker>=1.3.1',
                         'transformers>=2.11.0',
