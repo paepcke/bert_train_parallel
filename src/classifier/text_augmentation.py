@@ -12,8 +12,6 @@ from keras.preprocessing.sequence import pad_sequences
 from pytorch_pretrained_bert import BertTokenizer
 
 import pandas as pd
-from prompt_toolkit.clipboard import in_memory
-
 
 class TextAugmenter(object):
     '''
@@ -28,6 +26,7 @@ class TextAugmenter(object):
     
     # regex pattern to find newlines:
     NL_PAT = re.compile(r'\n')
+    
 
 
     #------------------------------------
@@ -52,8 +51,8 @@ class TextAugmenter(object):
             sequence_len = TextAugmenter.DEFAULT_SEQUENCE_LEN
         self.text_col  = text_col
         self.label_col = label_col
-        self.tokens_col = 'tokens'
-        self.ids_col   = 'ids'
+        self.tokens_col_name = 'tokens'
+        self.ids_col_name   = 'tok_ids'
         
         self.sequence_len = sequence_len
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
@@ -73,7 +72,7 @@ class TextAugmenter(object):
             chopped_tokenized = chopped_tokenized.drop(self.text_col, axis=1)
             
         # Add BERT ids column:
-        ids = self.padded_ids(chopped_tokenized[self.tokens_col].values)
+        ids = self.padded_ids(chopped_tokenized[self.tokens_col_name].values)
         chopped_tokenized['ids'] = ids
         chopped_tokenized.to_csv(outfile,index=False)
         
@@ -94,7 +93,7 @@ class TextAugmenter(object):
         # Add a col to the passed-in df: 'tokens'.
         # Create list the height of train_df:
         token_col = ['']*len(train_df)
-        train_df[self.tokens_col] = token_col
+        train_df[self.tokens_col_name] = token_col
         
         new_rows = []
         nl_pat = re.compile(r'\n')
@@ -113,7 +112,7 @@ class TextAugmenter(object):
             # Short enough to just keep?
             # The -2 allows for the [CLS] and [SEP] tokens:
             if len(tokenized_txt) <= self.sequence_len - 2:
-                row[self.tokens_col] = ['[CLS]'] + tokenized_txt + ['[SEP]']
+                row[self.tokens_col_name] = ['[CLS]'] + tokenized_txt + ['[SEP]']
                 new_rows.append(row)
                 continue
 
@@ -125,7 +124,7 @@ class TextAugmenter(object):
                                 ['[SEP]']
                 # Make a copy of the row, and fill in the token:
                 new_row = row.copy()
-                new_row[self.tokens_col] = sent_fragment
+                new_row[self.tokens_col_name] = sent_fragment
                 # Add to the train_df:
                 new_rows.append(new_row)
         new_rows_df = pd.DataFrame(new_rows, columns=train_df.columns)
@@ -135,30 +134,23 @@ class TextAugmenter(object):
     # fit_one_row_to_seq_len
     #-------------------
     
-    def fit_one_row_to_seq_len(self, 
-                               text,
-                               ids_col_name=None):
+    def fit_one_row_to_seq_len(self, text):
         '''
         Takes a dict created by CSV reader. Dict may
         have many keys, but only one named txt_col_name
-        is required. Default ids_col_name: self.ids_col
+        is required. Default ids_col_name: self.ids_col_names
         
         Returns an array of dicts. Each dict contains
         key ids_col_name. The value is an array of ints:
         indices into BERT vocab. Each int corresponds to one
         token in the given text.
         
-        @param row:
-        @type row:
-        @param txt_col_name: name of column containing text
-        @type txt_col_name: str
-        @return: list of dicts: {'tokens' : ['[CLS]','foo','bar',...'[SEP]'}
-        @rtype: ({str : arr[str]}
+        @param text: the text to tokenize and create BERT ids for
+        @type str
+        @return: list of dicts: {'ids' : [2534,15,...]'}
+        @rtype: ({str : arr[int]}
         '''
 
-        if ids_col_name is None:
-            ids_col_name = self.ids_col
-        
         # A single row may be chopped into multiple rows:
         new_rows = []
         # Remove \n chars;
@@ -174,17 +166,16 @@ class TextAugmenter(object):
         if len(tokenized_txt) <= self.sequence_len - 2:
             tokens = ['[CLS]'] + tokenized_txt + ['[SEP]']
             ids    = self.padded_ids(tokens)
-            new_rows.append({ids_col_name : ids})
-            continue
-
-        # Go through the too-long tokenized txt, and cut into pieces
-        # in which [CLS]<tokens>[SEP] are sequence_len long:
-        for pos in range(0,len(tokenized_txt),self.sequence_len-2):
-            sent_fragment = ['[CLS]'] + \
-                            tokenized_txt[pos:pos+self.sequence_len-2]  + \
-                            ['[SEP]']
-            ids    = self.padded_ids(sent_fragment)
-            new_rows.append({ids_col_name : ids})
+            new_rows.append({self.ids_col_name : ids})
+        else:
+            # Go through the too-long tokenized txt, and cut into pieces
+            # in which [CLS]<tokens>[SEP] are sequence_len long:
+            for pos in range(0,len(tokenized_txt),self.sequence_len-2):
+                sent_fragment = ['[CLS]'] + \
+                                tokenized_txt[pos:pos+self.sequence_len-2]  + \
+                                ['[SEP]']
+                ids    = self.padded_ids(sent_fragment)
+                new_rows.append({self.ids_col_name : ids})
         
         return new_rows
 
@@ -210,12 +201,12 @@ class TextAugmenter(object):
         @rtype: DataFrame
         '''
         
-        end_sentence_punctuation = '.!?'
+        #end_sentence_punctuation = '.!?'
         for (_indx, row) in train_df.iterrows():
             # Long enough token seq?
-            if len(row[self.tokens_col]) < TextAugmenter.MIN_AUG_LEN:
+            if len(row[self.tokens_col_name]) < TextAugmenter.MIN_AUG_LEN:
                 continue
-            sentence_bounds = self.get_indexes(row, end_sentence_punctuation)
+            # sentence_bounds = self.get_indexes(row, end_sentence_punctuation)
             
             
 
@@ -223,23 +214,31 @@ class TextAugmenter(object):
     # padded_id
     #-------------------
     
-    def padded_ids(self, token_seqs):
-        if type(token_seqs) != list:
-            token_seqs = [token_seqs]
-        ids = [self.tokenizer.convert_tokens_to_ids(tok_seq) \
-               for tok_seq in token_seqs]
-        padded_ids = pad_sequences(ids, 
+    def padded_ids(self, token_seq):
+        '''
+        Takes a list of tokens, and returns a list
+        of integer ids. The ids are indices into 
+        Bert vocabulary.
+        
+        @param token_seq:
+        @type token_seq:
+        @return: array of Bert ids
+        @rtype: [int]
+        '''
+#         if type(token_seqs) != list:
+#             token_seqs = [token_seqs]
+#         ids = [self.tokenizer.convert_tokens_to_ids(tok_seq) \
+#                for tok_seq in token_seqs]
+        ids = self.tokenizer.convert_tokens_to_ids(token_seq)
+        padded_ids = pad_sequences([ids], 
                                    maxlen=self.sequence_len, 
                                    dtype="long", 
                                    truncating="post", # Should be truncating 
                                    padding="post")  , # If padding needed: at the end
-        # return a Pandes series that can be
-        # directly added as a column to a df.
-        # padded_ids is a 1-tuple. Inside is 
-        # a 2D numpy array. Series apparently
-        # want Python arrays; therefore the
-        # 'list()':
-        return pd.Series(list(padded_ids[0]))
+
+        # Padded_ids is a 1-tuple. Inside is 
+        # a numpy array.
+        return padded_ids[0].flatten()
 
     #------------------------------------
     # get_indexes 

@@ -9,36 +9,42 @@ Created on Jun 8, 2020
 #**********    
 
 
-import ast
-import csv
+
+#import ast
 import datetime
 import os, sys
 import random
-import re
 import time
 
-from pandas.tests.extension.test_external_block import df
+sys.path.append(os.path.dirname(__file__))
+
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import classification_report 
 from sklearn.metrics import confusion_matrix 
 from sklearn.metrics import matthews_corrcoef
-from sklearn.model_selection import train_test_split
 from torch import nn, cuda
 import torch
-from torch.utils.data import IterableDataset
-from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from transformers import AdamW, BertForSequenceClassification
 from transformers import get_linear_schedule_with_warmup
 
+from bert_feeder_dataloader import BertFeederDataloader
+from bert_feeder_dataset import BertFeederDataset
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from src.classifier.bert_feeder_dataloader import set_split_id
+from src.classifier.logging_service import LoggingService
 import tensorflow as tf
 
-from bert_feeder_dataset import BertFeederDataset
+
+sys.path.append(os.path.dirname(__file__))
+
+#from torch.utils.data import DataLoader, SequentialSampler
 
 
+
+#from torch.utils.data import IterableDataset
 #from sklearn.metrics import accuracy_score 
 #???from bert_training.bert_fine_tuning_sentence_classification import df
 class PoliticalLeaningsAnalyst(object):
@@ -69,64 +75,87 @@ class PoliticalLeaningsAnalyst(object):
     https://huggingface.co/transformers/v2.2.0/model_doc/bert.html
     
     '''
-    SPACE_TO_COMMA_PAT = re.compile(r'([0-9])[\s]+')
+#     SPACE_TO_COMMA_PAT = re.compile(r'([0-9])[\s]+')
+    
+    RANDOM_SEED = 3631
     
     #------------------------------------
     # Constructor 
     #-------------------
 
     def __init__(self,
-                 model_save_path,
+                 csv_path,
+                 model_save_path=None,
+                 text_col_name='text',
+                 label_col_name='label',
                  epochs=4,
                  batch_size=8,
-                 max_seq_len=128,
+                 sequence_len=128,
                  learning_rate=3e-5
                  ):
         '''
         Number of epochs: 2, 3, 4 
         '''
+        
+        self.log = LoggingService()
         self.batch_size = batch_size
-        gpu_device = self.enable_GPU()
+        self.epochs     = epochs
+        self.gpu_device = self.enable_GPU()
+
+        if model_save_path is None:
+            (file_root, _ext) = os.path.splitext(csv_path)
+            model_save_path = file_root + '.sav'
+        # Preparation:
+        dataset = BertFeederDataset(csv_path,
+                                    text_col_name=text_col_name,
+                                    label_col_name=label_col_name,
+                                    sequence_len=sequence_len
+                                    )
+                #sampler = SequentialSampler(dataset)
+        dataloader = BertFeederDataloader(dataset, 
+                                #sampler=sampler, 
+                                batch_size=self.batch_size)
+
+        self.dataloader = dataloader
+
+        # Have the loader prepare 
+        dataloader.split_dataset(train_percent=0.8,
+                                 val_percent=0.1,
+                                 test_percent=0.1,
+                                 random_seed=self.RANDOM_SEED)
 
         # TRAINING:        
-        train_set_loader = self.load_dataset("datasets/leanings_right_sized.csv")
-        test_set_loader  = self.load_dataset("datasets/leanings_right_sized_testset.csv")
-        
-        (train_labels, train_input_ids, train_attention_masks) = self.init_label_info(train_set_loader)
-        (train_dataloader, validation_dataloader) = \
-           self.prepare_input_stream(train_input_ids, 
-                                     train_labels, 
-                                     train_attention_masks, 
-                                     batch_size)
-        (model, train_optimizer, train_scheduler) = self.prepare_model(train_dataloader, 
+        dataset.switch_to_split('train')
+        (model, train_optimizer, train_scheduler) = self.prepare_model(dataloader,
                                                                        learning_rate)
         self.train(model, 
-                   train_dataloader, 
-                   validation_dataloader, 
+                   dataloader,
                    train_optimizer, 
                    train_scheduler, 
-                   epochs, 
-                   gpu_device)
+                   epochs) 
         
         # TESTING:
-        # Have test set loader, need input_ids and labels
-        (test_labels, test_input_ids, test_attention_masks) = self.init_label_info(test_set_loader)
-        (test_dataloader, _test_validation_dataloader) = \
-           self.prepare_input_stream(test_input_ids, 
-                                     test_labels, 
-                                     test_attention_masks, 
-                                     batch_size)
-        self.test(model, test_input_ids, test_dataloader, gpu_device)
+
+        dataloader.switch_to_split('test')
+        (prediction_res, labels) = self.test(model, dataloader)
+        (prediction_logits, _something) = prediction_res
+        (labels, _something) = labels
         
         # EVALUATE RESULT:
-        
-        self.compute_matthews_coefficient(model, test_dataloader, gpu_device)
+        # Calculate the MCC
+        predictions = self.logits_to_classes(prediction_logits)
+        labels = labels.numpy()
+        mcc = self.matthews_corrcoef(predictions, labels)
+        self.log.info(f"Test Matthew's coefficient: {mcc}")
+        test_accuracy = self.accuracy(predictions, labels)
+        self.log.info(f"Accuracy on test set: {test_accuracy}")
         
         # Save the model on the VM
-        print(f"Saving model to VM...")
-        torch.save(model,open('curr_model.sav', 'wb'))
+        self.log.info(f"Saving model to {model_save_path} ...")
+        with open(model_save_path, 'wb') as fd:
+            torch.save(model, fd)
         
-        print("Copying model to Google Drive")
+        #print("Copying model to Google Drive")
 
 #       Note: To maximize the score, we should remove the "validation set", 
 #       which we used to help determine how many epochs to train for, and 
@@ -153,41 +182,42 @@ class PoliticalLeaningsAnalyst(object):
             return device_indx
         else:
             device = 'cpu'
-
-    #------------------------------------
-    # load_dataset 
-    #-------------------
-
-    def load_dataset(self, path):
-
-        # The Pandas.to_csv() method writes numeric Series 
-        # as a string: "[ 10   20   30]", so need to replace
-        # the white space with commas. Done via the following
-        # conversion function:
-        
-        # Find a digit followed by at least one whitespace: space or
-        # newline. Remember the digit as a capture group: the parens:
-        
-
-        
-        df = pd.read_csv(path,
-                         delimiter=',', 
-                         header=0, 
-                         converters={'ids' : self.to_np_array}
-                        )
-        self.train_set = df
-        (labels, input_ids, attention_masks) = self.init_label_info(df)
-
-        input_ids = torch.tensor(input_ids)
-        attention_masks = torch.tensor(attention_masks)
-        labels = torch.tensor(labels)
-
-        data = TensorDataset(input_ids, attention_masks, labels)
-        sampler = SequentialSampler(data)
-        dataloader = DataLoader(data, 
-                                sampler=sampler, 
-                                batch_size=self.batch_size)
-        return dataloader
+        return device
+    
+#     #------------------------------------
+#     # load_dataset 
+#     #-------------------
+# 
+#     def load_dataset(self, path):
+# 
+#         # The Pandas.to_csv() method writes numeric Series 
+#         # as a string: "[ 10   20   30]", so need to replace
+#         # the white space with commas. Done via the following
+#         # conversion function:
+#         
+#         # Find a digit followed by at least one whitespace: space or
+#         # newline. Remember the digit as a capture group: the parens:
+#         
+# 
+#         
+#         df = pd.read_csv(path,
+#                          delimiter=',', 
+#                          header=0, 
+#                          converters={'ids' : self.to_np_array}
+#                         )
+#         self.train_set = df
+#         (labels, input_ids, attention_masks) = self.init_label_info(df)
+# 
+#         input_ids = torch.tensor(input_ids)
+#         attention_masks = torch.tensor(attention_masks)
+#         labels = torch.tensor(labels)
+# 
+#         data = TensorDataset(input_ids, attention_masks, labels)
+#         sampler = SequentialSampler(data)
+#         dataloader = DataLoader(data, 
+#                                 sampler=sampler, 
+#                                 batch_size=self.batch_size)
+#         return dataloader
 
     #------------------------------------
     # init_label_info 
@@ -231,67 +261,67 @@ class PoliticalLeaningsAnalyst(object):
         
         return (label_encodings, input_ids, attention_masks)
 
-    #------------------------------------
-    # prepare_input_stream 
-    #-------------------
-
-    def prepare_input_stream(self, input_ids, labels, attention_masks, batch_size):
-        '''
-
-        Divide up our training set to use 90% for training 
-        and 10% for validation.
-        
-        We'll also create an iterator for our dataset 
-        using the torch DataLoader class. This helps 
-        save on memory during training because, unlike 
-        a for loop, with an iterator the entire dataset 
-        does not need to be loaded into memory.
-        
-        @param input_ids: array of BERT vocal indices
-        @type input_ids: nparray
-        @param labels: array of label identifiers, coded as ints
-        @type labels: int
-        @param attention_masks: mask over tokens to indicate 
-            padding (0s) from real tokens (1s)
-        @type attention_masks: nparray
-        @param batch_size: number of input records to process
-            at a time
-        @type batch_size: int
-        @return: train dataloader
-        @return: validation dataloader
-        @rtype: DataLoader
-        '''
-        # Use train_test_split to split our data into train and validation sets for training
-        
-        (train_inputs, validation_inputs, 
-        train_labels, validaton_labels) = train_test_split(input_ids, labels, 
-                                                           random_state=2018, test_size=0.1)
-        train_masks, validation_masks, _, _ = train_test_split(attention_masks, input_ids,
-                                                               random_state=2018, test_size=0.1)
-
-        # Convert all of our data into torch tensors, 
-        # the required datatype for our model
-        
-        train_inputs = torch.tensor(list(train_inputs))
-        validation_inputs = torch.tensor(list(validation_inputs))
-        
-        train_labels = torch.tensor(train_labels)
-        validaton_labels = torch.tensor(validaton_labels)
-        
-        train_masks = torch.tensor(train_masks)
-        validation_masks = torch.tensor(validation_masks)
-
-        train_data = TensorDataset(train_inputs, train_masks, train_labels)
-        train_sampler = RandomSampler(train_data)
-        train_dataloader = DataLoader(train_data, 
-                                      sampler=train_sampler, 
-                                      batch_size=batch_size)
-        
-        validation_data = TensorDataset(validation_inputs, validation_masks, validaton_labels)
-        validation_sampler = SequentialSampler(validation_data)
-        validation_dataloader = DataLoader(validation_data, sampler=validation_sampler, batch_size=batch_size)
-        
-        return (train_dataloader, validation_dataloader)
+#     #------------------------------------
+#     # prepare_input_stream 
+#     #-------------------
+# 
+#     def prepare_input_stream(self, input_ids, labels, attention_masks, batch_size):
+#         '''
+# 
+#         Divide up our training set to use 90% for training 
+#         and 10% for validation.
+#         
+#         We'll also create an iterator for our dataset 
+#         using the torch DataLoader class. This helps 
+#         save on memory during training because, unlike 
+#         a for loop, with an iterator the entire dataset 
+#         does not need to be loaded into memory.
+#         
+#         @param input_ids: array of BERT vocal indices
+#         @type input_ids: nparray
+#         @param labels: array of label identifiers, coded as ints
+#         @type labels: int
+#         @param attention_masks: mask over tokens to indicate 
+#             padding (0s) from real tokens (1s)
+#         @type attention_masks: nparray
+#         @param batch_size: number of input records to process
+#             at a time
+#         @type batch_size: int
+#         @return: train dataloader
+#         @return: validation dataloader
+#         @rtype: DataLoader
+#         '''
+#         # Use train_test_split to split our data into train and validation sets for training
+#         
+#         (train_inputs, validation_inputs, 
+#         train_labels, validaton_labels) = train_test_split(input_ids, labels, 
+#                                                            random_state=2018, test_size=0.1)
+#         train_masks, validation_masks, _, _ = train_test_split(attention_masks, input_ids,
+#                                                                random_state=2018, test_size=0.1)
+# 
+#         # Convert all of our data into torch tensors, 
+#         # the required datatype for our model
+#         
+#         train_inputs = torch.tensor(list(train_inputs))
+#         validation_inputs = torch.tensor(list(validation_inputs))
+#         
+#         train_labels = torch.tensor(train_labels)
+#         validaton_labels = torch.tensor(validaton_labels)
+#         
+#         train_masks = torch.tensor(train_masks)
+#         validation_masks = torch.tensor(validation_masks)
+# 
+#         train_data = TensorDataset(train_inputs, train_masks, train_labels)
+#         train_sampler = RandomSampler(train_data)
+#         train_dataloader = DataLoader(train_data, 
+#                                       sampler=train_sampler, 
+#                                       batch_size=batch_size)
+#         
+#         validation_data = TensorDataset(validation_inputs, validation_masks, validaton_labels)
+#         validation_sampler = SequentialSampler(validation_data)
+#         validation_dataloader = DataLoader(validation_data, sampler=validation_sampler, batch_size=batch_size)
+#         
+#         return (train_dataloader, validation_dataloader)
 
     #------------------------------------
     # prepare_model 
@@ -323,14 +353,15 @@ class PoliticalLeaningsAnalyst(object):
         model = BertForSequenceClassification.from_pretrained(
             #"bert-large-uncased", # Use the 12-layer BERT model, with an uncased vocab.
             "bert-base-uncased",
-            num_labels = 2, # The number of output labels--2 for binary classification.
+            num_labels = 3, # The number of output labels--2 for binary classification.
                             # You can increase this for multi-class tasks.   
-            output_attentions = False, # Whether th`e model returns attentions weights.
+            output_attentions = False, # Whether the model returns attentions weights.
             output_hidden_states = False, # Whether the model returns all hidden-states.
         )
         
         # Tell pytorch to run this model on the GPU.
-        model.cuda()
+        if self.gpu_device != 'cpu':
+            model.cuda()
         # Note: AdamW is a class from the huggingface library (as opposed to pytorch) 
         # I believe the 'W' stands for 'Weight Decay fix"
         optimizer = AdamW(model.parameters(),
@@ -355,12 +386,10 @@ class PoliticalLeaningsAnalyst(object):
 
     def train(self, 
               model, 
-              train_dataloader,
-              validation_dataloader, 
+              dataloader,
               optimizer, 
               scheduler, 
-              epochs, 
-              gpu_device):
+              epochs): 
         '''
         Below is our training loop. There's a lot going on, but fundamentally 
         for each pass in our loop we have a trianing phase and a validation phase. 
@@ -378,9 +407,9 @@ class PoliticalLeaningsAnalyst(object):
         
         **Evalution:**
         - Unpack our data inputs and labels
-        - Load data onto the GPU for acceleration
+        - Load data onto the GPU for acceleration (if available)
         - Forward pass (feed input data through the network)
-        - Compute loss on our validation data and track variables for monitoring progress
+        - Compute train_loss on our validation data and track variables for monitoring progress
         
         Pytorch hides all of the detailed calculations from us, 
         but we've commented the code to point out which of the 
@@ -395,7 +424,7 @@ class PoliticalLeaningsAnalyst(object):
         # https://github.com/huggingface/transformers/blob/5bfcd0485ece086ebcbed2d008813037968a9e58/examples/run_glue.py#L128
         
         # Set the seed value all over the place to make this reproducible.
-        seed_val = 42
+        seed_val = self.RANDOM_SEED
         
         random.seed(seed_val)
         np.random.seed(seed_val)
@@ -403,9 +432,9 @@ class PoliticalLeaningsAnalyst(object):
         # From torch:
         cuda.manual_seed_all(seed_val)
         
-        # We'll store a number of quantities such as training and validation loss, 
+        # We'll store a number of quantities such as training and validation train_loss, 
         # validation accuracy, and timings.
-        training_stats = []
+        self.training_stats = {'Training' : []}
         
         # Measure the total training time for the whole run.
         total_t0 = time.time()
@@ -419,15 +448,16 @@ class PoliticalLeaningsAnalyst(object):
             
             # Perform one full pass over the training set.
         
-            print("")
-            print('======== Epoch {:} / {:} ========'.format(epoch_i + 1, epochs))
-            print('Training...')
+            self.log.info("")
+            self.log.info(f'======== Epoch :{epoch_i + 1} / {epochs} ========')
+            self.log.info('Training...')
         
             # Measure how long the training epoch takes.
             t0 = time.time()
         
-            # Reset the total loss for this epoch.
-            total_train_loss = 0
+            # Reset the total train_loss for this epoch.
+            total_train_loss = 0.0
+            total_train_accuracy = 0.0
         
             # Put the model into training mode. Don't be mislead--the call to 
             # `train` just changes the *mode*, it doesn't *perform* the training.
@@ -436,15 +466,17 @@ class PoliticalLeaningsAnalyst(object):
             model.train()
         
             # For each batch of training data...
-            for step, batch in enumerate(train_dataloader):
+            # Tell data loader to pull from the train sample queue:
+            dataloader.switch_to_split('train')
+            for step, batch in enumerate(dataloader):
         
-                # Progress update every 40 batches.
-                if step % 40 == 0 and not step == 0:
+                # Progress update every 50 batches.
+                if step % 50 == 0 and not step == 0:
                     # Calculate elapsed time in minutes.
-                    elapsed = self.format_time(time.time() - t0)
+                    elapsed = self.log.info(f"{self.format_time(time.time() - t0)}") 
                     
                     # Report progress.
-                    print('  Batch {:>5,}  of  {:>5,}.    Elapsed: {:}.'.format(step, len(train_dataloader), elapsed))
+                    print('  Batch {:>5,}  of  {:>5,}.    Elapsed: {:}.'.format(step, len(dataloader), elapsed))
         
                 # Unpack this training batch from our dataloader. 
                 #
@@ -454,10 +486,15 @@ class PoliticalLeaningsAnalyst(object):
                 # `batch` contains three pytorch tensors:
                 #   [0]: input ids 
                 #   [1]: attention masks
-                #   [2]: labels 
-                b_input_ids = batch[0].to(gpu_device)
-                b_input_mask = batch[1].to(gpu_device)
-                b_labels = batch[2].to(gpu_device)
+                #   [2]: labels
+                if self.gpu_device == 'cpu':
+                    b_input_ids = batch['tok_ids']
+                    b_input_mask = batch['attention_mask']
+                    b_labels = batch['label']
+                else:
+                    b_input_ids = batch[0].to(self.gpu_device)
+                    b_input_mask = batch[1].to(self.gpu_device)
+                    b_labels = batch[2].to(self.gpu_device)
         
                 # Always clear any previously calculated gradients before performing a
                 # backward pass. PyTorch doesn't do this automatically because 
@@ -470,21 +507,30 @@ class PoliticalLeaningsAnalyst(object):
                 # https://huggingface.co/transformers/v2.2.0/model_doc/bert.html#transformers.BertForSequenceClassification
                 # It returns different numbers of parameters depending on what arguments
                 # arge given and what flags are set. For our useage here, it returns
-                # the loss (because we provided labels) and the "logits"--the model
+                # the train_loss (because we provided labels) and the "logits"--the model
                 # outputs prior to activation.
-                loss, logits = model(b_input_ids, 
+                train_loss, logits = model(b_input_ids, 
                                      token_type_ids=None, 
                                      attention_mask=b_input_mask, 
                                      labels=b_labels)
-        
-                # Accumulate the training loss over all of the batches so that we can
-                # calculate the average loss at the end. `loss` is a Tensor containing a
+                
+                train_acc = self.accuracy(logits, b_labels)
+                total_train_accuracy += train_acc
+
+                if self.gpu_device != 'cpu':
+                    del b_input_ids
+                    del b_input_mask
+                    del b_labels
+                    cuda.empty_cache()
+
+                # Accumulate the training train_loss over all of the batches so that we can
+                # calculate the average train_loss at the end. `train_loss` is a Tensor containing a
                 # single value; the `.item()` function just returns the Python value 
                 # from the tensor.
-                total_train_loss += loss.item()
+                total_train_loss += train_loss.item()
         
                 # Perform a backward pass to calculate the gradients.
-                loss.backward()
+                train_loss.backward()
         
                 # Clip the norm of the gradients to 1.0.
                 # This is to help prevent the "exploding gradients" problem.
@@ -499,15 +545,17 @@ class PoliticalLeaningsAnalyst(object):
                 # Update the learning rate.
                 scheduler.step()
         
-            # Calculate the average loss over all of the batches.
-            avg_train_loss = total_train_loss / len(train_dataloader)            
+            # Calculate the average train_loss over all of the batches.
+            avg_train_loss = total_train_loss / len(dataloader)
+            avg_train_accuracy = total_train_accuracy / len(dataloader)
             
             # Measure how long this epoch took.
             training_time = self.format_time(time.time() - t0)
         
-            print("")
-            print("  Average training loss: {0:.2f}".format(avg_train_loss))
-            print("  Training epcoh took: {:}".format(training_time))
+            self.log.info("")
+            self.log.info(f"  Average training loss: {avg_train_loss:.2f}")
+            self.log.info(f"  Average training accuracy: {avg_train_accuracy:.2f}")
+            self.log.info(f"  Training epoch took: {training_time}")
                 
             # ========================================
             #               Validation
@@ -515,8 +563,8 @@ class PoliticalLeaningsAnalyst(object):
             # After the completion of each training epoch, measure our performance on
             # our validation set.
         
-            print("")
-            print("Running Validation...")
+            self.log.info("")
+            self.log.info("Running Validation...")
         
             t0 = time.time()
         
@@ -525,12 +573,15 @@ class PoliticalLeaningsAnalyst(object):
             model.eval()
         
             # Tracking variables 
-            total_eval_accuracy = 0
-            total_eval_loss = 0
+            total_val_accuracy = 0
+            total_val_loss = 0
             #nb_eval_steps = 0
         
+            dataloader.switch_to_split('validate')
+            # Start feeding validation set from the beginning:
+            dataloader.reset_split('validate')
             # Evaluate data for one epoch
-            for batch in validation_dataloader:
+            for batch in dataloader:
                 
                 # Unpack this training batch from our dataloader. 
                 #
@@ -540,10 +591,15 @@ class PoliticalLeaningsAnalyst(object):
                 # `batch` contains three pytorch tensors:
                 #   [0]: input ids 
                 #   [1]: attention masks
-                #   [2]: labels 
-                b_input_ids = batch[0].to(gpu_device)
-                b_input_mask = batch[1].to(gpu_device)
-                b_labels = batch[2].to(gpu_device)
+                #   [2]: labels
+                if self.gpu_device == 'cpu':
+                    b_input_ids = batch['tok_ids']
+                    b_input_mask = batch['attention_mask']
+                    b_labels = batch['label']
+                else:
+                    b_input_ids = batch['tok_ids'].to(self.gpu_device)
+                    b_input_mask = batch['attention_mask'].to(self.gpu_device)
+                    b_labels = batch['label'].to(self.gpu_device)
                 
                 # Tell pytorch not to bother with constructing the compute graph during
                 # the forward pass, since this is only needed for backprop (training).
@@ -556,43 +612,42 @@ class PoliticalLeaningsAnalyst(object):
                     # https://huggingface.co/transformers/v2.2.0/model_doc/bert.html#transformers.BertForSequenceClassification
                     # Get the "logits" output by the model. The "logits" are the output
                     # values prior to applying an activation function like the softmax.
-                    (loss, logits) = model(b_input_ids, 
-                                           token_type_ids=None, 
-                                           attention_mask=b_input_mask,
-                                           labels=b_labels)
+                    (val_loss, logits) = model(b_input_ids, 
+                                               token_type_ids=None, 
+                                               attention_mask=b_input_mask,
+                                               labels=b_labels)
                     
-                # Accumulate the validation loss.
-                total_eval_loss += loss.item()
+                # Accumulate the validation loss and accuracy
+                total_val_loss += val_loss.item()
+                total_val_accuracy += self.accuracy(logits, b_labels)
         
                 # Move logits and labels to CPU
-                logits = logits.detach().cpu().numpy()
-                label_ids = b_labels.to('cpu').numpy()
-        
-                # Calculate the accuracy for this batch of test sentences, and
-                # accumulate it over all batches.
-                total_eval_accuracy += self.flat_accuracy(logits, label_ids)
-                
-        
-            # Report the final accuracy for this validation run.
-            avg_val_accuracy = total_eval_accuracy / len(validation_dataloader)
-            print("  Accuracy: {0:.2f}".format(avg_val_accuracy))
-        
+                if self.gpu_device != 'cpu':
+                    logits = logits.detach().cpu().numpy()
+                    _label_ids = b_labels.to('cpu').numpy()
+                else:
+                    _label_ids = b_labels
+                    
             # Calculate the average loss over all of the batches.
-            avg_val_loss = total_eval_loss / len(validation_dataloader)
+            with set_split_id(dataloader, 'validate'):
+                avg_val_loss = total_val_loss / len(dataloader)
+                avg_val_accuracy = total_val_accuracy / len(dataloader)
             
             # Measure how long the validation run took.
             validation_time = self.format_time(time.time() - t0)
             
-            print("  Validation Loss: {0:.2f}".format(avg_val_loss))
-            print("  Validation took: {:}".format(validation_time))
+            self.log.info(f"  Avg validation loss: {avg_val_loss:.2f}")
+            self.log.info(f"  Avg validation accuracy: {avg_val_accuracy:.2f}")
+            self.log.info(f"  Validation took: {validation_time}")
         
             # Record all statistics from this epoch.
-            training_stats.append(
+            self.training_stats['Training'].append(
                 {
                     'epoch': epoch_i + 1,
                     'Training Loss': avg_train_loss,
-                    'Valid. Loss': avg_val_loss,
-                    'Valid. Accur.': avg_val_accuracy,
+                    'Validation Loss': avg_val_loss,
+                    'Training Accuracy': avg_train_accuracy,
+                    'Validation Accuracy.': avg_val_accuracy,
                     'Training Time': training_time,
                     'Validation Time': validation_time
                 }
@@ -608,12 +663,10 @@ class PoliticalLeaningsAnalyst(object):
     # test 
     #-------------------
 
-    def test(self, model, input_ids, prediction_dataloader, gpu_device):
+    def test(self, model, dataloader):
         '''
-        pply our fine-tuned model to generate predictions on the test set.
+        Apply our fine-tuned model to generate predictions on the test set.
         '''
-        
-        print('Predicting labels for {:,} test sentences...'.format(len(input_ids)))
         
         # Put model in evaluation mode
         model.eval()
@@ -621,96 +674,143 @@ class PoliticalLeaningsAnalyst(object):
         # Tracking variables 
         predictions , true_labels = [], []
         
-        # Predict 
-        for batch in prediction_dataloader:
-            # Add batch to GPU
-            batch = tuple(t.to(gpu_device) for t in batch)
-            
-            #***** Are the following correct?
-            # Unpack the inputs from our dataloader
-            b_input_ids, b_input_mask, b_labels = batch
+        # Predict
+        # Batches come as dicts with keys
+        # sample_id, tok_ids, label, attention_mask: 
+        for batch in dataloader:
+            if self.gpu_device == 'cpu':
+                b_input_ids = batch['tok_ids']
+                b_input_mask = batch['attention_mask']
+                b_labels = batch['label']
+            else:
+                b_input_ids = batch['tok_ids'].to(self.gpu_device)
+                b_input_mask = batch['attention_mask'].to(self.gpu_device)
+                b_labels = batch['label'].to(self.gpu_device)
             
             # Telling the model not to compute or store gradients, saving memory and 
             # speeding up prediction
             with torch.no_grad():
-                # Forward pass, calculate logit predictions
-                outputs = model(b_input_ids, token_type_ids=None, 
-                                attention_mask=b_input_mask)
-            
-            logits = outputs[0]
-            
-            # Move logits and labels to CPU
-            logits = logits.detach().cpu().numpy()
-            label_ids = b_labels.to('cpu').numpy()
+                (loss, logits) = model(b_input_ids, 
+                                       token_type_ids=None, 
+                                       attention_mask=b_input_mask,
+                                       labels=b_labels)
+                    
+            # Move logits and labels to CPU, if the
+            # are not already:
+            if self.gpu_device != 'cpu':
+                logits = logits.detach().cpu().numpy()
+                b_labels = batch['label'].to('cpu').numpy()
             
             # Store predictions and true labels
             predictions.append(logits)
-            true_labels.append(label_ids)
+            true_labels.append(b_labels)
         
-        print('    DONE.')
-        return(true_labels)
+        self.log.info('    DONE applying model to test set.')
+        self.training_stats['Testing'] = \
+                {
+                    'Test Loss': loss,
+                    'Test Accuracy': self.accuracy(logits, b_labels),
+                    'Matthews corrcoef': self.matthews_corrcoef(logits, b_labels)
+                }
+                
+        return(predictions, true_labels)
+
 
     #------------------------------------
-    # compute_matthews_coefficient 
+    # matthews_corrcoef
     #-------------------
-    
-    def compute_matthews_coefficient(self, model, prediction_dataloader, gpu_device):
-        # Tracking variables 
-        predictions , true_labels = [], []
+
+    def matthews_corrcoef(self, predicted_classes, labels):
+        '''
+        Computes the Matthew's correlation coefficient
+        from arrays of predicted classes and true labels.
+        The predicted_classes may be either raw logits, or
+        an array of already processed logits, namely 
+        class labels. Ex:
         
-        # Predict 
-        for batch in prediction_dataloader:
-            # Add batch to GPU
-            batch = tuple(t.to(gpu_device) for t in batch)
-            # Unpack the inputs from our dataloader
-            b_input_ids, b_input_mask, b_labels = batch
-            # Telling the model not to compute or store gradients, saving memory and speeding up prediction
-            with torch.no_grad():
-            # Forward pass, calculate logit predictions
-                logits = model(b_input_ids, token_type_ids=None, attention_mask=b_input_mask)
-            # Move logits and labels to CPU
-            logits = logits[0].detach().cpu().numpy()
-            label_ids = b_labels.to('cpu').numpy()
-          
-            # Store predictions and true labels
-            predictions.append(logits)
-            true_labels.append(label_ids)
+           [[logit1,logit2,logit3],
+            [logit1,logit2,logit3]
+            ]
+            
+        or: [class1, class2, ...]
         
-        del batch
-        del logits
-        # From torch:
-        cuda.empty_cache()
+        where the former are the log odds of each
+        class. The latter are the classes decided by
+        the highes-logit class. See self.logits_to_classes()
+            
         
-        # Combine the results for all of the batches and calculate our final MCC score.
-        
-        # Combine the results across all batches. 
-        flat_predictions = np.concatenate(predictions, axis=0)
-        
-        # For each sample, pick the label (0 or 1) with the higher score.
-        flat_predictions = np.argmax(flat_predictions, axis=1).flatten()
-        
-        # Combine the correct labels for each batch into a single list.
-        flat_true_labels = np.concatenate(true_labels, axis=0)
-        
-        # Calculate the MCC
-        mcc = matthews_corrcoef(flat_true_labels, flat_predictions)
-        
-        print('Total MCC: %.3f' % mcc)
+        @param predicted_classes: array of predicted class labels
+        @type predicted_classes: {[int]|[[float]]}
+        @param labels: array of true labels
+        @type labels: [int]
+        @return: Matthew's correlation coefficient,
+        @rtype: float
+        '''
+        if len(predicted_classes.shape) > 1:
+            predicted_classes = self.logits_to_classes(predicted_classes)
+        mcc = matthews_corrcoef(labels, predicted_classes)
         return mcc
+        
+        
+        
+#     #------------------------------------
+#     # compute_matthews_coefficient 
+#     #-------------------
+#     
+#     def compute_matthews_coefficient(self, model, prediction_dataloader):
+#         # Tracking variables 
+#         predictions , true_labels = [], []
+#         
+#         # Predict 
+#         for batch in prediction_dataloader:
+#             # Add batch to GPU
+#             batch = tuple(t.to(self.gpu_device) for t in batch)
+#             # Unpack the inputs from our dataloader
+#             batch['tok_ids'], b_input_mask, b_labels = batch
+#             # Telling the model not to compute or store gradients, saving memory and speeding up prediction
+#             with torch.no_grad():
+#             # Forward pass, calculate logit predictions
+#                 logits = model(batch['tok_ids'], token_type_ids=None, attention_mask=b_input_mask)
+#             # Move logits and labels to CPU
+#             logits = logits[0].detach().cpu().numpy()
+#             label_ids = b_labels.to('cpu').numpy()
+#           
+#             # Store predictions and true labels
+#             predictions.append(logits)
+#             true_labels.append(label_ids)
+#         
+#         del batch
+#         del logits
+#         # From torch:
+#         cuda.empty_cache()
+#         
+#         # Combine the results for all of the batches and calculate our final MCC score.
+#         
+#         # Combine the results across all batches. 
+#         flat_predictions = np.concatenate(predictions, axis=0)
+#         
+#         # For each sample, pick the label (0 or 1) with the higher score.
+#         flat_predictions = np.argmax(flat_predictions, axis=1).flatten()
+#         
+#         # Combine the correct labels for each batch into a single list.
+#         flat_true_labels = np.concatenate(true_labels, axis=0)
+#         
+#         # Calculate the MCC
+#         mcc = matthews_corrcoef(flat_true_labels, flat_predictions)
+#         
+#         print('Total MCC: %.3f' % mcc)
+#         return mcc
 
     #------------------------------------
     # print_test_results 
     #-------------------
     
-    def print_test_results(self, predictions, true_labels):
-        # Flatten the predictions and true values for aggregate Matthew's evaluation on the whole dataset
-        flat_predictions = [item for sublist in predictions for item in sublist]
-        flat_predictions = np.argmax(flat_predictions, axis=1).flatten()
-        flat_true_labels = [item for sublist in true_labels for item in sublist]
-        
-        print(flat_predictions)
-        print(flat_true_labels)
-        
+    #*****def print_test_results(self, dataloader, predictions, true_labels):
+    def print_test_results(self):
+        print(self.training_stats)
+        #***********
+        return
+        #***********
         test_count = 0
         unsure_count = 0
         count = 0
@@ -721,54 +821,54 @@ class PoliticalLeaningsAnalyst(object):
         right_test = 0
         right_count = 0
         
-        for i in range(len(df)):
-            y_label = flat_predictions[i]
-            category = flat_true_labels[i]
-            count += 1
-            if (category == 2):
-                neutral_count += 1
-            if (category == 1):
-                left_count += 1
-            if (category == 0):
-                right_count += 1
-            if (y_label == category):
-                test_count += 1
-                if (category == 2):
-                    neutral_count += 1
-                if (category == 0):
-                    right_test += 1
-                if (category == 1):
-                    left_test += 1
-                # print("CORRECT!")
-                # print(df['message'][i], y_label)
-                # print("is : ", category)
-            else:
-                # print("WRONG!")
-                # print(df['message'][i], y_label)
-                # print("is actually: ", category)
-                # print(test_count, "+", unsure_count, "out of", count)
-                pass
-        print("neutral: ", neutral_test, "/", neutral_count)
-        print("left: ", left_test, "/", left_count)
-        print("right: ", right_test, "/", right_count)
-        print(test_count, "+", unsure_count, "out of", count)
-        
-        print(accuracy_score(flat_true_labels, flat_predictions))
-                
-        # Format confusion matrix:
-            
-        #             right   left    neutral
-        #     right
-        #     left
-        #     neutral
-        
-        results = confusion_matrix(flat_true_labels, flat_predictions) 
-          
-        print('Confusion Matrix :')
-        print(results) 
-        print('Accuracy Score :',accuracy_score(flat_true_labels, flat_predictions))
-        print('Report : ')
-        print(classification_report(flat_true_labels, flat_predictions))
+#         for i in range(len(self.dataloader)):
+#             y_label = flat_predictions[i]
+#             category = flat_true_labels[i]
+#             count += 1
+#             if (category == 2):
+#                 neutral_count += 1
+#             if (category == 1):
+#                 left_count += 1
+#             if (category == 0):
+#                 right_count += 1
+#             if (y_label == category):
+#                 test_count += 1
+#                 if (category == 2):
+#                     neutral_count += 1
+#                 if (category == 0):
+#                     right_test += 1
+#                 if (category == 1):
+#                     left_test += 1
+#                 # print("CORRECT!")
+#                 # print(df['message'][i], y_label)
+#                 # print("is : ", category)
+#             else:
+#                 # print("WRONG!")
+#                 # print(df['message'][i], y_label)
+#                 # print("is actually: ", category)
+#                 # print(test_count, "+", unsure_count, "out of", count)
+#                 pass
+#         print("neutral: ", neutral_test, "/", neutral_count)
+#         print("left: ", left_test, "/", left_count)
+#         print("right: ", right_test, "/", right_count)
+#         print(test_count, "+", unsure_count, "out of", count)
+#         
+#         print(accuracy_score(flat_true_labels, flat_predictions))
+#                 
+#         # Format confusion matrix:
+#             
+#         #             right   left    neutral
+#         #     right
+#         #     left
+#         #     neutral
+#         
+#         results = confusion_matrix(flat_true_labels, flat_predictions) 
+#           
+#         print('Confusion Matrix :')
+#         print(results) 
+#         print('Accuracy Score :',accuracy_score(flat_true_labels, flat_predictions))
+#         print('Report : ')
+#         print(classification_report(flat_true_labels, flat_predictions))
 
 
 # ---------------------- Utilities ----------------------
@@ -793,19 +893,19 @@ class PoliticalLeaningsAnalyst(object):
         except FileExistsError:
             pass
 
-    #------------------------------------
-    # to_np_array 
-    #-------------------
-
-    def to_np_array(self, array_string):
-        # Use the pattern to substitute occurrences of
-        # "123   45" with "123,45". The \1 refers to the
-        # digit that matched (i.e. the capture group):
-        proper_array_str = PoliticalLeaningsAnalyst.SPACE_TO_COMMA_PAT.sub(r'\1,', array_string)
-        # Remove extraneous spaces:
-        proper_array_str = re.sub('\s', '', proper_array_str)
-        # Turn from a string to array:
-        return np.array(ast.literal_eval(proper_array_str))
+#     #------------------------------------
+#     # to_np_array 
+#     #-------------------
+# 
+#     def to_np_array(self, array_string):
+#         # Use the pattern to substitute occurrences of
+#         # "123   45" with "123,45". The \1 refers to the
+#         # digit that matched (i.e. the capture group):
+#         proper_array_str = PoliticalLeaningsAnalyst.SPACE_TO_COMMA_PAT.sub(r'\1,', array_string)
+#         # Remove extraneous spaces:
+#         proper_array_str = re.sub('\s', '', proper_array_str)
+#         # Turn from a string to array:
+#         return np.array(ast.literal_eval(proper_array_str))
 
     #------------------------------------
     # print_model_parms 
@@ -895,16 +995,72 @@ class PoliticalLeaningsAnalyst(object):
         plt.show()
 
     #------------------------------------
-    # flat_accuracy 
+    # accuracy 
     #-------------------
 
-    def flat_accuracy(self, preds, labels):
+    def accuracy(self, predicted_classes, labels):
         '''
-        Function to calculate the accuracy of our predictions vs labels
+        Function to calculate the accuracy of our predictions vs labels.
+        The predicted_classes may be either raw logits, or
+        an array of already processed logits, namely 
+        class labels. Ex:
+        
+           [[logit1,logit2,logit3],
+            [logit1,logit2,logit3]
+            ]
+            
+        or: [class1, class2, ...]
+        
+        where the former are the log odds of each
+        class. The latter are the classes decided by
+        the highes-logit class. See self.logits_to_classes()
+
+        Accuracy is returned as percentage of times the
+        prediction agreed with the labels.
+        
+        @param predicted_classes: raw predictions: for each sample: logit for each class 
+        @type predicted_classes:
+        @param labels: for each sample: true class
+        @type labels: [int]
         '''
-        pred_flat = np.argmax(preds, axis=1).flatten()
-        labels_flat = labels.flatten()
-        return np.sum(pred_flat == labels_flat) / len(labels_flat)
+        # Convert logits to classe predictions if needed:
+        if len(predicted_classes.shape) > 1:
+            predicted_classes = self.logits_to_classes(predicted_classes)
+        if type(labels) in (torch.Tensor, tf.Tensor):
+            labels = labels.numpy()
+        # Compute number of times prediction was equal to the label.
+        return np.count_nonzero(predicted_classes == labels) / len(labels)
+
+    #------------------------------------
+    # logits_to_classes 
+    #-------------------
+    
+    def logits_to_classes(self, logits):
+        '''
+        Given an array of logit arrays, return
+        an array of classes. Example:
+        for a three-class classifier, logits might
+        be:
+           [[0.4, 0.6, -1.4],
+            [-4.0,0.7,0.9]
+           ]
+        The first says: logit of first sample being class 0 is 0.4.
+        To come up with a final prediction for each sample,
+        pick the highest logit label as the prediction (0,1,...):
+          row1: label == 1
+          row2: label == 2
+
+        @param logits: array of class logits
+        @type logits: [[float]] or tensor([[float]])
+        '''
+        # Run argmax on every sample's logits array,
+        # generating a class in place of each array.
+        # The .numpy() turns the resulting tensor to 
+        # a numpy array. The detach() is needed to get
+        # just the tensors, without the gradient function
+        # from the tensor+grad:  
+        pred_classes = tf.map_fn(np.argmax, logits.detach(), dtype=np.int16).numpy()
+        return pred_classes
 
     #------------------------------------
     # format_time  
@@ -922,87 +1078,95 @@ class PoliticalLeaningsAnalyst(object):
         # Format as hh:mm:ss
         return str(datetime.timedelta(seconds=elapsed_rounded))
 
-# --------------------- LeaningsDataset -----------
-
-class LeaningsDataset(IterableDataset):
-    '''
-    Takes path to a CSV file prepared by ****????****
-    Columns: id,advertiser,page,leaning,tokens,ids
-    Sample:
-      (10,'Biden','http://...','left',"['[CLS],'Joe','runs',...'[SEP]']",'[[114 321 ...],[4531 ...]])
-    
-    Tokens is a stringified array of array of tokens.
-    Length: sequence size (e.g. 128)
-    Length: as many are there are lines of sample ads.
-    Ids are a stringified arrays of arrays of ints. Each
-      int is an index into BERT vocab. 
-    Length: sequence size (e.g. 128)
-    '''
-
-    #------------------------------------
-    # Constructor 
-    #-------------------
-
-    def __init__(self, csv_path):
-
-        try:
-            csv_fd = open(csv_path, 'r')
-            self.reader = csv.reader(csv_fd)
-        finally:
-            csv_fd.close()
-            
-    #------------------------------------
-    # __iter__ 
-    #-------------------
-    
-    def __iter__(self):
-        return self
-
-                        
-    #------------------------------------
-    # __next__ 
-    #-------------------
- 
-    def __next__(self):
-        row = next(self.reader)
-        ids = row['ids']
-        
-            
-            
-        reader = pd.read_csv(csv_path,
-                         delimiter=',', 
-                         header=0, 
-                         converters={'ids' : self.to_np_array}
-                        )
-        
-        
-        # Extract the sentences and labels of our training 
-        # set as numpy ndarrays.
-        labels = df.leaning.values
-        # Labels must be int-encoded:
-        label_encodings = []
-        for i in range(len(labels)):
-            if labels[i] == 'right':
-                label_encodings.append(0)
-            if labels[i] == 'left':
-                label_encodings.append(1)
-            if labels[i] == 'neutral':
-                label_encodings.append(2)
-        
-        # Grab the BERT index ints version of the tokens:
-        input_ids = self.train_set.ids
-        
-        # Create attention masks
-        attention_masks = []
-        
-        # Create a mask of 1s for each token followed by 0s for padding
-        for seq in input_ids:
-            #seq_mask = [float(i>0) for i in seq]
-            seq_mask = [int(i>0) for i in seq]
-            attention_masks.append(seq_mask)
-        
-        return (label_encodings, input_ids, attention_masks)
-        
+# # --------------------- LeaningsDataset -----------
+# 
+# class LeaningsDataset(IterableDataset):
+#     '''
+#     Takes path to a CSV file prepared by ****????****
+#     Columns: id,advertiser,page,leaning,tokens,ids
+#     Sample:
+#       (10,'Biden','http://...','left',"['[CLS],'Joe','runs',...'[SEP]']",'[[114 321 ...],[4531 ...]])
+#     
+#     Tokens is a stringified array of array of tokens.
+#     Length: sequence size (e.g. 128)
+#     Length: as many are there are lines of sample ads.
+#     Ids are a stringified arrays of arrays of ints. Each
+#       int is an index into BERT vocab. 
+#     Length: sequence size (e.g. 128)
+#     '''
+# 
+#     #------------------------------------
+#     # Constructor 
+#     #-------------------
+# 
+#     def __init__(self, csv_path):
+# 
+#         try:
+#             csv_fd = open(csv_path, 'r')
+#             self.reader = csv.reader(csv_fd)
+#         finally:
+#             csv_fd.close()
+#             
+#     #------------------------------------
+#     # __iter__ 
+#     #-------------------
+#     
+#     def __iter__(self):
+#         return self
+# 
+#                         
+#     #------------------------------------
+#     # __next__ 
+#     #-------------------
+#  
+#     def __next__(self):
+#         row = next(self.reader)
+#         ids = row['ids']
+#         
+#             
+#             
+#         reader = pd.read_csv(csv_path,
+#                          delimiter=',', 
+#                          header=0, 
+#                          converters={'ids' : self.to_np_array}
+#                         )
+#         
+#         
+#         # Extract the sentences and labels of our training 
+#         # set as numpy ndarrays.
+#         labels = df.leaning.values
+#         # Labels must be int-encoded:
+#         label_encodings = []
+#         for i in range(len(labels)):
+#             if labels[i] == 'right':
+#                 label_encodings.append(0)
+#             if labels[i] == 'left':
+#                 label_encodings.append(1)
+#             if labels[i] == 'neutral':
+#                 label_encodings.append(2)
+#         
+#         # Grab the BERT index ints version of the tokens:
+#         input_ids = self.train_set.ids
+#         
+#         # Create attention masks
+#         attention_masks = []
+#         
+#         # Create a mask of 1s for each token followed by 0s for padding
+#         for seq in input_ids:
+#             #seq_mask = [float(i>0) for i in seq]
+#             seq_mask = [int(i>0) for i in seq]
+#             attention_masks.append(seq_mask)
+#         
+#         return (label_encodings, input_ids, attention_masks)
+#         
 # -------------------- Main ----------------
 if __name__ == '__main__':
-    PoliticalLeaningsAnalyst('/Users/paepcke/tmp/testModel.sav')
+    
+    data_dir = os.path.join(os.path.dirname(__file__), 'datasets')
+    csv_path = os.path.join(data_dir, "facebook_ads.csv")
+    
+    pa = PoliticalLeaningsAnalyst(csv_path,
+                                  text_col_name='message',
+                                  label_col_name='leaning'
+                                  )
+    pa.print_test_results()
