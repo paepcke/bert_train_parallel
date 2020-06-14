@@ -33,8 +33,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from src.classifier.bert_feeder_dataloader import set_split_id
-from src.classifier.logging_service import LoggingService
+from bert_feeder_dataloader import set_split_id
+from logging_service import LoggingService
 import tensorflow as tf
 
 
