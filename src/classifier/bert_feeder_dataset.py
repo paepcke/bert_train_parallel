@@ -21,6 +21,7 @@ import numpy as np
 from classifier.logging_service import LoggingService
 from classifier.text_augmentation import TextAugmenter
 
+TESTING = False
 
 class BertFeederDataset(Dataset):
     '''
@@ -258,10 +259,11 @@ class BertFeederDataset(Dataset):
                 db.execute(insert_cmd)
                 num_processed += 1
                 #************
-                if num_processed >= 100:
-                    db.commit()
-
-                    break
+                if TESTING:
+                    if num_processed >= 100:
+                        db.commit()
+    
+                        break
                 #************
                 if num_processed % 1000 == 0:
                     db.commit()
