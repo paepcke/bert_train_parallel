@@ -18,8 +18,8 @@ from pandas.core.frame import DataFrame
 from torch.utils.data import Dataset
 
 import numpy as np
-from src.classifier.logging_service import LoggingService
-from src.classifier.text_augmentation import TextAugmenter
+from classifier.logging_service import LoggingService
+from classifier.text_augmentation import TextAugmenter
 
 
 class BertFeederDataset(Dataset):
