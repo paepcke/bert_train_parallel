@@ -16,6 +16,9 @@ import os, sys
 import random
 import time
 
+import GPUtil
+from scipy.linalg.decomp import hessenberg
+
 sys.path.append(os.path.dirname(__file__))
 
 from sklearn.metrics import accuracy_score
@@ -47,6 +50,17 @@ sys.path.append(os.path.dirname(__file__))
 #from torch.utils.data import IterableDataset
 #from sklearn.metrics import accuracy_score 
 #???from bert_training.bert_fine_tuning_sentence_classification import df
+
+# ------------------------ Specialty Exceptions --------
+
+class NoGPUAvailable(Exception):
+    pass
+
+class TrainError(Exception):
+    # Error in the train/validate loop
+    pass
+
+# ------------------------ Main Class ----------------
 class PoliticalLeaningsAnalyst(object):
     '''
     For this task, we first want to modify the pre-trained 
@@ -101,6 +115,11 @@ class PoliticalLeaningsAnalyst(object):
         self.log = LoggingService(logfile=logfile_name)
         self.batch_size = batch_size
         self.epochs     = epochs
+        
+        # The following call also sets self.gpu_obj
+        # to a GPUtil.GPU instance, so we can check
+        # on the GPU status along the way:
+        
         self.gpu_device = self.enable_GPU()
 
         if model_save_path is None:
@@ -168,7 +187,9 @@ class PoliticalLeaningsAnalyst(object):
     # enable_GPU 
     #-------------------
 
-    def enable_GPU(self):
+    def enable_GPU(self, raise_gpu_unavailable=True):
+
+        self.gpu_obj = None
 
         # Get the GPU device name.
         # Could be (GPU available):
@@ -176,16 +197,39 @@ class PoliticalLeaningsAnalyst(object):
         # or (No GPU available):
         #   device(type='cpu')
 
-        device_name = tf.test.gpu_device_name()
-        if len(device_name) == 0:
+        gpu_objs = GPUtil.getGPUs()
+        if len(gpu_objs) == 0:
             return 'cpu'
-        # Got something like: '/device:GPU:0
-        (_device_mnt, device_type, device_indx) = device_name.split(':')
-        if device_type == 'GPU':
-            return device_indx
-        else:
-            device = 'cpu'
-        return device
+
+        # GPUs are installed, are any available, given
+        # their current memory/cpu usage? We use the 
+        # default maxLoad of 0.5 and maxMemory of 0.5
+        # as OK to use GPU:
+        
+        try:
+            device_id = GPUtil.getFirstAvailable()
+        except RuntimeError:
+            # If caller wants non-availability of GPU
+            # even though GPUs are installed to be an 
+            # error, throw one:
+            if raise_gpu_unavailable:
+                raise NoGPUAvailable("Even though GPUs are installed, all are already in use.")
+            else:
+                # Else quietly revert to CPU
+                return 'cpu'
+        
+        # Get the GPU object that has the found
+        # deviceID:
+        for gpu_obj in gpu_objs:
+            if gpu_obj.id == device_id:
+                self.gpu_obj = gpu_obj
+                break
+            
+        if self.gpu_obj is None:
+            # This should not happen:
+            raise NoGPUAvailable(f"GPU availability yields dev Id {device_id}; yet none of GPUs has that id")
+
+        return device_id 
     
 #     #------------------------------------
 #     # load_dataset 
@@ -263,68 +307,6 @@ class PoliticalLeaningsAnalyst(object):
             attention_masks.append(seq_mask)
         
         return (label_encodings, input_ids, attention_masks)
-
-#     #------------------------------------
-#     # prepare_input_stream 
-#     #-------------------
-# 
-#     def prepare_input_stream(self, input_ids, labels, attention_masks, batch_size):
-#         '''
-# 
-#         Divide up our training set to use 90% for training 
-#         and 10% for validation.
-#         
-#         We'll also create an iterator for our dataset 
-#         using the torch DataLoader class. This helps 
-#         save on memory during training because, unlike 
-#         a for loop, with an iterator the entire dataset 
-#         does not need to be loaded into memory.
-#         
-#         @param input_ids: array of BERT vocal indices
-#         @type input_ids: nparray
-#         @param labels: array of label identifiers, coded as ints
-#         @type labels: int
-#         @param attention_masks: mask over tokens to indicate 
-#             padding (0s) from real tokens (1s)
-#         @type attention_masks: nparray
-#         @param batch_size: number of input records to process
-#             at a time
-#         @type batch_size: int
-#         @return: train dataloader
-#         @return: validation dataloader
-#         @rtype: DataLoader
-#         '''
-#         # Use train_test_split to split our data into train and validation sets for training
-#         
-#         (train_inputs, validation_inputs, 
-#         train_labels, validaton_labels) = train_test_split(input_ids, labels, 
-#                                                            random_state=2018, test_size=0.1)
-#         train_masks, validation_masks, _, _ = train_test_split(attention_masks, input_ids,
-#                                                                random_state=2018, test_size=0.1)
-# 
-#         # Convert all of our data into torch tensors, 
-#         # the required datatype for our model
-#         
-#         train_inputs = torch.tensor(list(train_inputs))
-#         validation_inputs = torch.tensor(list(validation_inputs))
-#         
-#         train_labels = torch.tensor(train_labels)
-#         validaton_labels = torch.tensor(validaton_labels)
-#         
-#         train_masks = torch.tensor(train_masks)
-#         validation_masks = torch.tensor(validation_masks)
-# 
-#         train_data = TensorDataset(train_inputs, train_masks, train_labels)
-#         train_sampler = RandomSampler(train_data)
-#         train_dataloader = DataLoader(train_data, 
-#                                       sampler=train_sampler, 
-#                                       batch_size=batch_size)
-#         
-#         validation_data = TensorDataset(validation_inputs, validation_masks, validaton_labels)
-#         validation_sampler = SequentialSampler(validation_data)
-#         validation_dataloader = DataLoader(validation_data, sampler=validation_sampler, batch_size=batch_size)
-#         
-#         return (train_dataloader, validation_dataloader)
 
     #------------------------------------
     # prepare_model 
@@ -405,7 +387,7 @@ class PoliticalLeaningsAnalyst(object):
               (useful for things like RNNs) unless you explicitly clear them out.
         - Forward pass (feed input data through the network)
         - Backward pass (backpropagation)
-        - Tell the network to update parameters with optimizer.step()
+        - Tell the network to update parameters with optimizer.sample_counter()
         - Track variables for monitoring progress
         
         **Evalution:**
@@ -467,197 +449,220 @@ class PoliticalLeaningsAnalyst(object):
             # `dropout` and `batchnorm` layers behave differently during training
             # vs. test (source: https://stackoverflow.com/questions/51433378/what-does-model-train-do-in-pytorch)
             model.train()
-        
+
+            # When using a GPU, we check GPU memory 
+            # at critical moments, and store the result
+            # as a dict in the following list:
+            self.gpu_status_history = []
+
             # For each batch of training data...
             # Tell data loader to pull from the train sample queue:
             dataloader.switch_to_split('train')
-            for step, batch in enumerate(dataloader):
-        
-                # Progress update every 50 batches.
-                if step % 50 == 0 and not step == 0:
-                    # Calculate elapsed time in minutes.
-                    elapsed = self.log.info(f"{self.format_time(time.time() - t0)}") 
-                    
-                    # Report progress.
-                    self.log.info('  Batch {:>5,}  of  {:>5,}.    Elapsed: {:}.'.format(step, len(dataloader), elapsed))
-        
-                # Unpack this training batch from our dataloader. 
-                #
-                # As we unpack the batch, we'll also copy each tensor to the GPU using the 
-                # `to` method.
-                #
-                # `batch` contains three pytorch tensors:
-                #   [0]: input ids 
-                #   [1]: attention masks
-                #   [2]: labels
-                if self.gpu_device == 'cpu':
-                    b_input_ids = batch['tok_ids']
-                    b_input_mask = batch['attention_mask']
-                    b_labels = batch['label']
-                else:
-                    b_input_ids = batch['tok_ids'].to(device=f"cuda:{self.gpu_device}")
-                    b_input_mask = batch['attention_mask'].to(device=f"cuda:{self.gpu_device}")
-                    b_labels = batch['label'].to(device=f"cuda:{self.gpu_device}")
-        
-                # Always clear any previously calculated gradients before performing a
-                # backward pass. PyTorch doesn't do this automatically because 
-                # accumulating the gradients is "convenient while training RNNs". 
-                # (source: https://stackoverflow.com/questions/48001598/why-do-we-need-to-call-zero-grad-in-pytorch)
-                model.zero_grad()        
-        
-                # Perform a forward pass (evaluate the model on this training batch).
-                # The documentation for this `model` function is here: 
-                # https://huggingface.co/transformers/v2.2.0/model_doc/bert.html#transformers.BertForSequenceClassification
-                # It returns different numbers of parameters depending on what arguments
-                # arge given and what flags are set. For our useage here, it returns
-                # the train_loss (because we provided labels) and the "logits"--the model
-                # outputs prior to activation.
-                train_loss, logits = model(b_input_ids, 
-                                     token_type_ids=None, 
-                                     attention_mask=b_input_mask, 
-                                     labels=b_labels)
-
-                train_acc = self.accuracy(logits, b_labels)
-                total_train_accuracy += train_acc
-
-                # Accumulate the training train_loss over all of the batches so that we can
-                # calculate the average train_loss at the end. `train_loss` is a Tensor containing a
-                # single value; the `.item()` function just returns the Python value 
-                # from the tensor.
-                total_train_loss += train_loss.item()
-        
-                # Perform a backward pass to calculate the gradients.
-                train_loss.backward()
-                
-                if self.gpu_device != 'cpu':
-                    del b_input_ids
-                    del b_input_mask
-                    del b_labels
-                    del train_loss
-                    del logits
-                    cuda.empty_cache()
-
-                # Clip the norm of the gradients to 1.0.
-                # This is to help prevent the "exploding gradients" problem.
-                # From torch:
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        
-                # Update parameters and take a step using the computed gradient.
-                # The optimizer dictates the "update rule"--how the parameters are
-                # modified based on their gradients, the learning rate, etc.
-                optimizer.step()
-        
-                # Update the learning rate.
-                scheduler.step()
-        
-            # Calculate the average train_loss over all of the batches.
-            avg_train_loss = total_train_loss / len(dataloader)
-            avg_train_accuracy = total_train_accuracy / len(dataloader)
+            try:
+                for sample_counter, batch in enumerate(dataloader):
             
-            # Measure how long this epoch took.
-            training_time = self.format_time(time.time() - t0)
-        
-            self.log.info("")
-            self.log.info(f"  Average training loss: {avg_train_loss:.2f}")
-            self.log.info(f"  Average training accuracy: {avg_train_accuracy:.2f}")
-            self.log.info(f"  Training epoch took: {training_time}")
-                
-            # ========================================
-            #               Validation
-            # ========================================
-            # After the completion of each training epoch, measure our performance on
-            # our validation set.
-        
-            self.log.info("")
-            self.log.info("Running Validation...")
-        
-            t0 = time.time()
-        
-            # Put the model in evaluation mode--the dropout layers behave differently
-            # during evaluation.
-            model.eval()
-        
-            # Tracking variables 
-            total_val_accuracy = 0
-            total_val_loss = 0
-            #nb_eval_steps = 0
-        
-            dataloader.switch_to_split('validate')
-            # Start feeding validation set from the beginning:
-            dataloader.reset_split('validate')
-            # Evaluate data for one epoch
-            for batch in dataloader:
-                
-                # Unpack this training batch from our dataloader. 
-                #
-                # As we unpack the batch, we'll also copy each tensor to the GPU using 
-                # the `to` method.
-                #
-                # `batch` contains three pytorch tensors:
-                #   [0]: input ids 
-                #   [1]: attention masks
-                #   [2]: labels
-                if self.gpu_device == 'cpu':
-                    b_input_ids = batch['tok_ids']
-                    b_input_mask = batch['attention_mask']
-                    b_labels = batch['label']
-                else:
-                    b_input_ids = batch['tok_ids'].to(device=f"cuda:{self.gpu_device}")
-                    b_input_mask = batch['attention_mask'].to(device=f"cuda:{self.gpu_device}")
-                    b_labels = batch['label'].to(device=f"cuda:{self.gpu_device}")
-                
-                # Tell pytorch not to bother with constructing the compute graph during
-                # the forward pass, since this is only needed for backprop (training).
-                with torch.no_grad():        
-        
-                    # Forward pass, calculate logit predictions.
-                    # token_type_ids is the same as the "segment ids", which 
-                    # differentiates sentence 1 and 2 in 2-sentence tasks.
+                    # Progress update every 50 batches.
+                    if sample_counter % 50 == 0 and not sample_counter == 0:
+                        # Calculate elapsed time in minutes.
+                        elapsed = self.log.info(f"{self.format_time(time.time() - t0)}") 
+                        
+                        # Report progress.
+                        self.log.info('  Batch {:>5,}  of  {:>5,}.    Elapsed: {:}.'.format(sample_counter, len(dataloader), elapsed))
+            
+                    # Unpack this training batch from our dataloader. 
+                    #
+                    # As we unpack the batch, we'll also copy each tensor to the GPU using the 
+                    # `to` method.
+                    #
+                    # `batch` contains three pytorch tensors:
+                    #   [0]: input ids 
+                    #   [1]: attention masks
+                    #   [2]: labels
+                    if self.gpu_device == 'cpu':
+                        b_input_ids = batch['tok_ids']
+                        b_input_mask = batch['attention_mask']
+                        b_labels = batch['label']
+                    else:
+                        b_input_ids = batch['tok_ids'].to(device=f"cuda:{self.gpu_device}")
+                        b_input_mask = batch['attention_mask'].to(device=f"cuda:{self.gpu_device}")
+                        b_labels = batch['label'].to(device=f"cuda:{self.gpu_device}")
+            
+                    # Always clear any previously calculated gradients before performing a
+                    # backward pass. PyTorch doesn't do this automatically because 
+                    # accumulating the gradients is "convenient while training RNNs". 
+                    # (source: https://stackoverflow.com/questions/48001598/why-do-we-need-to-call-zero-grad-in-pytorch)
+                    model.zero_grad()        
+            
+                    # Note GPU usage:
+                    if self.gpu_device != 'cpu':
+                        self.history_checkpoint(sample_counter,'pre_model_call')
+                        
+                    # Perform a forward pass (evaluate the model on this training batch).
                     # The documentation for this `model` function is here: 
                     # https://huggingface.co/transformers/v2.2.0/model_doc/bert.html#transformers.BertForSequenceClassification
-                    # Get the "logits" output by the model. The "logits" are the output
-                    # values prior to applying an activation function like the softmax.
-                    (val_loss, logits) = model(b_input_ids, 
-                                               token_type_ids=None, 
-                                               attention_mask=b_input_mask,
-                                               labels=b_labels)
+                    # It returns different numbers of parameters depending on what arguments
+                    # arge given and what flags are set. For our useage here, it returns
+                    # the train_loss (because we provided labels) and the "logits"--the model
+                    # outputs prior to activation.
+                    train_loss, logits = model(b_input_ids, 
+                                         token_type_ids=None, 
+                                         attention_mask=b_input_mask, 
+                                         labels=b_labels)
+    
+                    train_acc = self.accuracy(logits, b_labels)
+                    total_train_accuracy += train_acc
+    
+                    # Note GPU usage:
+                    if self.gpu_device != 'cpu':
+                        self.history_checkpoint(epoch_i, sample_counter,'post_model_call')
+    
+                    # Accumulate the training train_loss over all of the batches so that we can
+                    # calculate the average train_loss at the end. `train_loss` is a Tensor containing a
+                    # single value; the `.item()` function just returns the Python value 
+                    # from the tensor.
+                    total_train_loss += train_loss.item()
+            
+                    # Perform a backward pass to calculate the gradients.
+                    train_loss.backward()
                     
-                # Accumulate the validation loss and accuracy
-                total_val_loss += val_loss.item()
-                total_val_accuracy += self.accuracy(logits, b_labels)
-
-                if self.gpu_device != 'cpu':
-                    del b_input_ids
-                    del b_input_mask
-                    del b_labels
-                    del val_loss
-                    del logits
-                    cuda.empty_cache()
-
-            # Calculate the average loss over all of the batches.
-            with set_split_id(dataloader, 'validate'):
-                avg_val_loss = total_val_loss / len(dataloader)
-                avg_val_accuracy = total_val_accuracy / len(dataloader)
+                    if self.gpu_device != 'cpu':
+                        del b_input_ids
+                        del b_input_mask
+                        del b_labels
+                        del train_loss
+                        del logits
+                        cuda.empty_cache()
+    
+                    # Note GPU usage:
+                    if self.gpu_device != 'cpu':
+                        self.history_checkpoint(epoch_i, sample_counter,'post_model_freeing')
+    
+                    # Clip the norm of the gradients to 1.0.
+                    # This is to help prevent the "exploding gradients" problem.
+                    # From torch:
+                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             
-            # Measure how long the validation run took.
-            validation_time = self.format_time(time.time() - t0)
+                    # Update parameters and take a sample_counter using the computed gradient.
+                    # The optimizer dictates the "update rule"--how the parameters are
+                    # modified based on their gradients, the learning rate, etc.
+                    optimizer.step()
             
-            self.log.info(f"  Avg validation loss: {avg_val_loss:.2f}")
-            self.log.info(f"  Avg validation accuracy: {avg_val_accuracy:.2f}")
-            self.log.info(f"  Validation took: {validation_time}")
-        
-            # Record all statistics from this epoch.
-            self.training_stats['Training'].append(
-                {
-                    'epoch': epoch_i + 1,
-                    'Training Loss': avg_train_loss,
-                    'Validation Loss': avg_val_loss,
-                    'Training Accuracy': avg_train_accuracy,
-                    'Validation Accuracy.': avg_val_accuracy,
-                    'Training Time': training_time,
-                    'Validation Time': validation_time
-                }
-            )
+                    # Update the learning rate.
+                    scheduler.step()
+            
+                # Calculate the average train_loss over all of the batches.
+                avg_train_loss = total_train_loss / len(dataloader)
+                avg_train_accuracy = total_train_accuracy / len(dataloader)
+                
+                # Measure how long this epoch took.
+                training_time = self.format_time(time.time() - t0)
+            
+                self.log.info("")
+                self.log.info(f"  Average training loss: {avg_train_loss:.2f}")
+                self.log.info(f"  Average training accuracy: {avg_train_accuracy:.2f}")
+                self.log.info(f"  Training epoch took: {training_time}")
+                    
+                # ========================================
+                #               Validation
+                # ========================================
+                # After the completion of each training epoch, measure our performance on
+                # our validation set.
+            
+                self.log.info("")
+                self.log.info("Running Validation...")
+            
+                t0 = time.time()
+            
+                # Put the model in evaluation mode--the dropout layers behave differently
+                # during evaluation.
+                model.eval()
+            
+                # Tracking variables 
+                total_val_accuracy = 0
+                total_val_loss = 0
+                #nb_eval_steps = 0
+            
+                dataloader.switch_to_split('validate')
+                # Start feeding validation set from the beginning:
+                dataloader.reset_split('validate')
+                # Evaluate data for one epoch
+                for batch in dataloader:
+                    
+                    # Unpack this training batch from our dataloader. 
+                    #
+                    # As we unpack the batch, we'll also copy each tensor to the GPU using 
+                    # the `to` method.
+                    #
+                    # `batch` contains three pytorch tensors:
+                    #   [0]: input ids 
+                    #   [1]: attention masks
+                    #   [2]: labels
+                    if self.gpu_device == 'cpu':
+                        b_input_ids = batch['tok_ids']
+                        b_input_mask = batch['attention_mask']
+                        b_labels = batch['label']
+                    else:
+                        b_input_ids = batch['tok_ids'].to(device=f"cuda:{self.gpu_device}")
+                        b_input_mask = batch['attention_mask'].to(device=f"cuda:{self.gpu_device}")
+                        b_labels = batch['label'].to(device=f"cuda:{self.gpu_device}")
+                    
+                    # Tell pytorch not to bother with constructing the compute graph during
+                    # the forward pass, since this is only needed for backprop (training).
+                    with torch.no_grad():        
+            
+                        # Forward pass, calculate logit predictions.
+                        # token_type_ids is the same as the "segment ids", which 
+                        # differentiates sentence 1 and 2 in 2-sentence tasks.
+                        # The documentation for this `model` function is here: 
+                        # https://huggingface.co/transformers/v2.2.0/model_doc/bert.html#transformers.BertForSequenceClassification
+                        # Get the "logits" output by the model. The "logits" are the output
+                        # values prior to applying an activation function like the softmax.
+                        (val_loss, logits) = model(b_input_ids, 
+                                                   token_type_ids=None, 
+                                                   attention_mask=b_input_mask,
+                                                   labels=b_labels)
+                        
+                    # Accumulate the validation loss and accuracy
+                    total_val_loss += val_loss.item()
+                    total_val_accuracy += self.accuracy(logits, b_labels)
+    
+                    if self.gpu_device != 'cpu':
+                        del b_input_ids
+                        del b_input_mask
+                        del b_labels
+                        del val_loss
+                        del logits
+                        cuda.empty_cache()
+    
+                    # Calculate the average loss over all of the batches.
+                    with set_split_id(dataloader, 'validate'):
+                        avg_val_loss = total_val_loss / len(dataloader)
+                        avg_val_accuracy = total_val_accuracy / len(dataloader)
+                    
+                    # Measure how long the validation run took.
+                    validation_time = self.format_time(time.time() - t0)
+                    
+                    self.log.info(f"  Avg validation loss: {avg_val_loss:.2f}")
+                    self.log.info(f"  Avg validation accuracy: {avg_val_accuracy:.2f}")
+                    self.log.info(f"  Validation took: {validation_time}")
+                
+                    # Record all statistics from this epoch.
+                    self.training_stats['Training'].append(
+                        {
+                            'epoch': epoch_i + 1,
+                            'Training Loss': avg_train_loss,
+                            'Validation Loss': avg_val_loss,
+                            'Training Accuracy': avg_train_accuracy,
+                            'Validation Accuracy.': avg_val_accuracy,
+                            'Training Time': training_time,
+                            'Validation Time': validation_time
+                        }
+                    )
+            except Exception as e:
+                msg = f"During train/validate: {repr(e)}\n"
+                msg += f"GPU use history: {self.gpu_status_history}"
+                raise TrainError(msg)
+                
         self.log.info("")
         self.log.info("Training complete!")
         
@@ -1083,6 +1088,20 @@ class PoliticalLeaningsAnalyst(object):
         # Format as hh:mm:ss
         return str(datetime.timedelta(seconds=elapsed_rounded))
 
+    #------------------------------------
+    # history_checkpoint 
+    #-------------------
+
+    def history_checkpoint(self, epoch_num, sample_counter, process_moment):
+        # Note GPU usage:
+        self.gpu_status_history.append(
+            {'epoch_num'      : epoch_num,
+             'sample_counter' : sample_counter,
+             'process_moment' : process_moment,
+             'GPU_free_memory': self.gpu_obj.memoryFree,
+             'GPU_memory_used': self.gpu_obj.memoryUsed
+             }
+            )
 # -------------------- Main ----------------
 if __name__ == '__main__':
     
@@ -1093,7 +1112,7 @@ if __name__ == '__main__':
                                   text_col_name='message',
                                   label_col_name='leaning',
                                   #*********
-                                  #epochs=1
+                                  epochs=1
                                   #*********
                                   )
     pa.print_test_results()

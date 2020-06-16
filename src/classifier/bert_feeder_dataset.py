@@ -21,8 +21,8 @@ import numpy as np
 from logging_service import LoggingService
 from text_augmentation import TextAugmenter
 
-TESTING = False
-#TESTING = True
+#****TESTING = False
+TESTING = True
 
 class BertFeederDataset(Dataset):
     '''
