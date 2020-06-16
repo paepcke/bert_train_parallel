@@ -462,7 +462,6 @@ class PoliticalLeaningsAnalyst(object):
             self.gpu_status_history = []
 
             if self.gpu_device != 'cpu':
-                optimizer = optimizer.to('cpu')
                 scheduler = scheduler.to('cpu')
                 cuda.empty_cache()
                 model     = model.to(self.cuda_dev)
@@ -551,7 +550,6 @@ class PoliticalLeaningsAnalyst(object):
                         del logits
                         model = model.to('cpu')
                         cuda.empty_cache()
-                        optimizer = optimizer.to(self.cuda_dev)
                         self.history_checkpoint(epoch_i, sample_counter,'post_model_freeing')
      
     
@@ -563,7 +561,6 @@ class PoliticalLeaningsAnalyst(object):
                     
                     # Note GPU usage:
                     if self.gpu_device != 'cpu':
-                        optimizer = optimizer.to('cpu')
                         cuda.empty_cache()
                         self.history_checkpoint(epoch_i, sample_counter,'post_optimizer')
                         scheduler = scheduler.to(self.cuda_dev)
@@ -571,9 +568,6 @@ class PoliticalLeaningsAnalyst(object):
                     # Update the learning rate.
                     scheduler.step()
             
-                    if self.gpu_device != 'cpu':
-                        optimizer = scheduler.to('cpu')
-
                 # Calculate the average train_loss over all of the batches.
                 avg_train_loss = total_train_loss / len(dataloader)
                 avg_train_accuracy = total_train_accuracy / len(dataloader)
