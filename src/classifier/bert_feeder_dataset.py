@@ -241,7 +241,10 @@ class BertFeederDataset(Dataset):
             while True:
                 # Next dict with 'ids', 'label, 'attention_mask':
                 # Will throw StopIteration when done:
-                row_dict = self.next_csv_row()
+                try:
+                    row_dict = self.next_csv_row()
+                except StopIteration:
+                    break
                 if row_dict is None:
                     # An error in the CSV file; next_csv_row()
                     # already wrote an error msg. Keep going
