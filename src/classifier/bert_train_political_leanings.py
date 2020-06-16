@@ -498,7 +498,7 @@ class PoliticalLeaningsAnalyst(object):
             
                     # Note GPU usage:
                     if self.gpu_device != 'cpu':
-                        self.history_checkpoint(sample_counter,'pre_model_call')
+                        self.history_checkpoint(epoch_i, sample_counter,'pre_model_call')
                         
                     # Perform a forward pass (evaluate the model on this training batch).
                     # The documentation for this `model` function is here: 
