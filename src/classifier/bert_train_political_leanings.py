@@ -97,7 +97,8 @@ class PoliticalLeaningsAnalyst(object):
         Number of epochs: 2, 3, 4 
         '''
         
-        self.log = LoggingService()
+        logfile_name = os.path.join(os.path.dirname(__file__), 'facebook_train.log')
+        self.log = LoggingService(logfile=logfile_name)
         self.batch_size = batch_size
         self.epochs     = epochs
         self.gpu_device = self.enable_GPU()
