@@ -138,16 +138,11 @@ class PoliticalLeaningsAnalyst(object):
         # TESTING:
 
         dataloader.switch_to_split('test')
-        (prediction_res, labels) = self.test(model, dataloader)
-        (prediction_logits, _something) = prediction_res
-        (labels, _something) = labels
+        (predictions, labels) = self.test(model, dataloader)
         
         # EVALUATE RESULT:
         # Calculate the MCC
-        predictions = self.logits_to_classes(prediction_logits)
-        if self.gpu_device != 'cpu':
-            labels = labels.to('cpu')
-        labels = labels.numpy()
+
         mcc = self.matthews_corrcoef(predictions, labels)
         self.log.info(f"Test Matthew's coefficient: {mcc}")
         test_accuracy = self.accuracy(predictions, labels)
@@ -521,15 +516,9 @@ class PoliticalLeaningsAnalyst(object):
                                      token_type_ids=None, 
                                      attention_mask=b_input_mask, 
                                      labels=b_labels)
-                
+
                 train_acc = self.accuracy(logits, b_labels)
                 total_train_accuracy += train_acc
-
-                if self.gpu_device != 'cpu':
-                    del b_input_ids
-                    del b_input_mask
-                    del b_labels
-                    cuda.empty_cache()
 
                 # Accumulate the training train_loss over all of the batches so that we can
                 # calculate the average train_loss at the end. `train_loss` is a Tensor containing a
@@ -539,7 +528,15 @@ class PoliticalLeaningsAnalyst(object):
         
                 # Perform a backward pass to calculate the gradients.
                 train_loss.backward()
-        
+                
+                if self.gpu_device != 'cpu':
+                    del b_input_ids
+                    del b_input_mask
+                    del b_labels
+                    del train_loss
+                    del logits
+                    cuda.empty_cache()
+
                 # Clip the norm of the gradients to 1.0.
                 # This is to help prevent the "exploding gradients" problem.
                 # From torch:
@@ -628,14 +625,15 @@ class PoliticalLeaningsAnalyst(object):
                 # Accumulate the validation loss and accuracy
                 total_val_loss += val_loss.item()
                 total_val_accuracy += self.accuracy(logits, b_labels)
-        
-                # Move logits and labels to CPU
+
                 if self.gpu_device != 'cpu':
-                    logits = logits.detach().cpu().numpy()
-                    _label_ids = b_labels.to('cpu').numpy()
-                else:
-                    _label_ids = b_labels
-                    
+                    del b_input_ids
+                    del b_input_mask
+                    del b_labels
+                    del val_loss
+                    del logits
+                    cuda.empty_cache()
+
             # Calculate the average loss over all of the batches.
             with set_split_id(dataloader, 'validate'):
                 avg_val_loss = total_val_loss / len(dataloader)
@@ -673,14 +671,14 @@ class PoliticalLeaningsAnalyst(object):
 
     def test(self, model, dataloader):
         '''
-        Apply our fine-tuned model to generate predictions on the test set.
+        Apply our fine-tuned model to generate all_predictions on the test set.
         '''
         
         # Put model in evaluation mode
         model.eval()
         
         # Tracking variables 
-        predictions , true_labels = [], []
+        all_predictions , all_labels = [], []
         
         # Predict
         # Batches come as dicts with keys
@@ -706,23 +704,31 @@ class PoliticalLeaningsAnalyst(object):
             # Move logits and labels to CPU, if the
             # are not already:
             if self.gpu_device != 'cpu':
-                logits = logits.detach().cpu().numpy()
-                b_labels = batch['label'].to('cpu').numpy()
-            
-            # Store predictions and true labels
-            predictions.append(logits)
-            true_labels.append(b_labels)
+                logits = logits.to('cpu')
+                logits = logits.detach().numpy()
+                batch  = batch.to('cpu')
+                b_labels = batch['label'].numpy()
+                del loss
+                cuda.empty_cache()
+
+            # Get the class prediction from the 
+            # logits:
+            predictions = self.logits_to_classes(logits)            
+            # Store all_predictions and true labels
+            all_predictions.extend(predictions)
+            labels = b_labels.numpy()
+            all_labels.extend(labels)
         
         self.log.info('    DONE applying model to test set.')
         self.training_stats['Testing'] = \
                 {
                     'Test Loss': loss,
-                    'Test Accuracy': self.accuracy(logits, b_labels),
-                    'Matthews corrcoef': self.matthews_corrcoef(logits, b_labels),
-                    'Confusion matrix' : self.confusion_matrix(logits, b_labels)
+                    'Test Accuracy': self.accuracy(all_predictions, all_labels),
+                    'Matthews corrcoef': self.matthews_corrcoef(all_predictions, all_labels),
+                    'Confusion matrix' : self.confusion_matrix(all_predictions, all_labels)
                 }
                 
-        return(predictions, true_labels)
+        return(all_predictions, all_labels)
 
 
     #------------------------------------
@@ -755,7 +761,8 @@ class PoliticalLeaningsAnalyst(object):
         @return: Matthew's correlation coefficient,
         @rtype: float
         '''
-        if len(predicted_classes.shape) > 1:
+        if type(predicted_classes) == torch.Tensor and \
+            len(predicted_classes.shape) > 1:
             predicted_classes = self.logits_to_classes(predicted_classes)
         mcc = matthews_corrcoef(labels, predicted_classes)
         return mcc
@@ -779,8 +786,11 @@ class PoliticalLeaningsAnalyst(object):
         #     left
         #     neutral
 
-        if len(logits_or_classes.shape) > 1:
+        if type(logits_or_classes) == torch.Tensor and \
+            len(logits_or_classes.shape) > 1:
             predicted_classes = self.logits_to_classes(logits_or_classes)
+        else:
+            predicted_classes = logits_or_classes
          
         n_by_n_conf_matrix = confusion_matrix(y_true, predicted_classes, matrix_labels) 
            
@@ -1013,7 +1023,8 @@ class PoliticalLeaningsAnalyst(object):
         @type labels: [int]
         '''
         # Convert logits to classe predictions if needed:
-        if len(predicted_classes.shape) > 1:
+        if type(predicted_classes) == torch.Tensor and \
+            len(predicted_classes.shape) > 1:
             # This call will also move the result to CPU:
             predicted_classes = self.logits_to_classes(predicted_classes)
         if type(labels) in (torch.Tensor, tf.Tensor):
