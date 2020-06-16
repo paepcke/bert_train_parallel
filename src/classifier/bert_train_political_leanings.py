@@ -145,6 +145,8 @@ class PoliticalLeaningsAnalyst(object):
         # EVALUATE RESULT:
         # Calculate the MCC
         predictions = self.logits_to_classes(prediction_logits)
+        if self.gpu_device != 'cpu':
+            labels.to('cpu')
         labels = labels.numpy()
         mcc = self.matthews_corrcoef(predictions, labels)
         self.log.info(f"Test Matthew's coefficient: {mcc}")
@@ -1012,8 +1014,11 @@ class PoliticalLeaningsAnalyst(object):
         '''
         # Convert logits to classe predictions if needed:
         if len(predicted_classes.shape) > 1:
+            # This call will also move the result to CPU:
             predicted_classes = self.logits_to_classes(predicted_classes)
         if type(labels) in (torch.Tensor, tf.Tensor):
+            if self.gpu_device != 'cpu':
+                labels.to('cpu')
             labels = labels.numpy()
         # Compute number of times prediction was equal to the label.
         return np.count_nonzero(predicted_classes == labels) / len(labels)
