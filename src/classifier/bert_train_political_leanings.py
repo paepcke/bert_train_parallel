@@ -367,7 +367,7 @@ class PoliticalLeaningsAnalyst(object):
         
         # Tell pytorch to run this model on the GPU.
         if self.gpu_device != 'cpu':
-            model.cuda()
+            model.to('cuda')
         # Note: AdamW is a class from the huggingface library (as opposed to pytorch) 
         # I believe the 'W' stands for 'Weight Decay fix"
         optimizer = AdamW(model.parameters(),
@@ -498,9 +498,9 @@ class PoliticalLeaningsAnalyst(object):
                     b_input_mask = batch['attention_mask']
                     b_labels = batch['label']
                 else:
-                    b_input_ids = batch['tok_ids'].to(self.gpu_device)
-                    b_input_mask = batch['attention_mask'].to(self.gpu_device)
-                    b_labels = batch['label'].to(self.gpu_device)
+                    b_input_ids = batch['tok_ids'].to(device=f"cuda:{self.gpu_device}")
+                    b_input_mask = batch['attention_mask'].to(device=f"cuda:{self.gpu_device}")
+                    b_labels = batch['label'].to(device=f"cuda:{self.gpu_device}")
         
                 # Always clear any previously calculated gradients before performing a
                 # backward pass. PyTorch doesn't do this automatically because 
@@ -603,9 +603,9 @@ class PoliticalLeaningsAnalyst(object):
                     b_input_mask = batch['attention_mask']
                     b_labels = batch['label']
                 else:
-                    b_input_ids = batch['tok_ids'].to(self.gpu_device)
-                    b_input_mask = batch['attention_mask'].to(self.gpu_device)
-                    b_labels = batch['label'].to(self.gpu_device)
+                    b_input_ids = batch['tok_ids'].to(device=f"cuda:{self.gpu_device}")
+                    b_input_mask = batch['attention_mask'].to(device=f"cuda:{self.gpu_device}")
+                    b_labels = batch['label'].to(device=f"cuda:{self.gpu_device}")
                 
                 # Tell pytorch not to bother with constructing the compute graph during
                 # the forward pass, since this is only needed for backprop (training).
@@ -689,9 +689,9 @@ class PoliticalLeaningsAnalyst(object):
                 b_input_mask = batch['attention_mask']
                 b_labels = batch['label']
             else:
-                b_input_ids = batch['tok_ids'].to(self.gpu_device)
-                b_input_mask = batch['attention_mask'].to(self.gpu_device)
-                b_labels = batch['label'].to(self.gpu_device)
+                b_input_ids = batch['tok_ids'].to(device=f"cuda:{self.gpu_device}")
+                b_input_mask = batch['attention_mask'].to(device=f"cuda:{self.gpu_device}")
+                b_labels = batch['label'].to(device=f"cuda:{self.gpu_device}")
             
             # Telling the model not to compute or store gradients, saving memory and 
             # speeding up prediction
@@ -789,54 +789,6 @@ class PoliticalLeaningsAnalyst(object):
         self.log.info(classification_report(y_true, predicted_classes))
         
         return n_by_n_conf_matrix
-
-#     #------------------------------------
-#     # compute_matthews_coefficient 
-#     #-------------------
-#     
-#     def compute_matthews_coefficient(self, model, prediction_dataloader):
-#         # Tracking variables 
-#         predictions , true_labels = [], []
-#         
-#         # Predict 
-#         for batch in prediction_dataloader:
-#             # Add batch to GPU
-#             batch = tuple(t.to(self.gpu_device) for t in batch)
-#             # Unpack the inputs from our dataloader
-#             batch['tok_ids'], b_input_mask, b_labels = batch
-#             # Telling the model not to compute or store gradients, saving memory and speeding up prediction
-#             with torch.no_grad():
-#             # Forward pass, calculate logit predictions
-#                 logits = model(batch['tok_ids'], token_type_ids=None, attention_mask=b_input_mask)
-#             # Move logits and labels to CPU
-#             logits = logits[0].detach().cpu().numpy()
-#             label_ids = b_labels.to('cpu').numpy()
-#           
-#             # Store predictions and true labels
-#             predictions.append(logits)
-#             true_labels.append(label_ids)
-#         
-#         del batch
-#         del logits
-#         # From torch:
-#         cuda.empty_cache()
-#         
-#         # Combine the results for all of the batches and calculate our final MCC score.
-#         
-#         # Combine the results across all batches. 
-#         flat_predictions = np.concatenate(predictions, axis=0)
-#         
-#         # For each sample, pick the label (0 or 1) with the higher score.
-#         flat_predictions = np.argmax(flat_predictions, axis=1).flatten()
-#         
-#         # Combine the correct labels for each batch into a single list.
-#         flat_true_labels = np.concatenate(true_labels, axis=0)
-#         
-#         # Calculate the MCC
-#         mcc = matthews_corrcoef(flat_true_labels, flat_predictions)
-#         
-#         self.log.info('Total MCC: %.3f' % mcc)
-#         return mcc
 
     #------------------------------------
     # print_test_results 
@@ -1093,7 +1045,9 @@ class PoliticalLeaningsAnalyst(object):
         # The .numpy() turns the resulting tensor to 
         # a numpy array. The detach() is needed to get
         # just the tensors, without the gradient function
-        # from the tensor+grad:  
+        # from the tensor+grad:
+        if self.gpu_device != 'cpu':
+            logits = logits.to('cpu')
         pred_classes = tf.map_fn(np.argmax, logits.detach(), dtype=np.int16).numpy()
         return pred_classes
 
@@ -1113,87 +1067,6 @@ class PoliticalLeaningsAnalyst(object):
         # Format as hh:mm:ss
         return str(datetime.timedelta(seconds=elapsed_rounded))
 
-# # --------------------- LeaningsDataset -----------
-# 
-# class LeaningsDataset(IterableDataset):
-#     '''
-#     Takes path to a CSV file prepared by ****????****
-#     Columns: id,advertiser,page,leaning,tokens,ids
-#     Sample:
-#       (10,'Biden','http://...','left',"['[CLS],'Joe','runs',...'[SEP]']",'[[114 321 ...],[4531 ...]])
-#     
-#     Tokens is a stringified array of array of tokens.
-#     Length: sequence size (e.g. 128)
-#     Length: as many are there are lines of sample ads.
-#     Ids are a stringified arrays of arrays of ints. Each
-#       int is an index into BERT vocab. 
-#     Length: sequence size (e.g. 128)
-#     '''
-# 
-#     #------------------------------------
-#     # Constructor 
-#     #-------------------
-# 
-#     def __init__(self, csv_path):
-# 
-#         try:
-#             csv_fd = open(csv_path, 'r')
-#             self.reader = csv.reader(csv_fd)
-#         finally:
-#             csv_fd.close()
-#             
-#     #------------------------------------
-#     # __iter__ 
-#     #-------------------
-#     
-#     def __iter__(self):
-#         return self
-# 
-#                         
-#     #------------------------------------
-#     # __next__ 
-#     #-------------------
-#  
-#     def __next__(self):
-#         row = next(self.reader)
-#         ids = row['ids']
-#         
-#             
-#             
-#         reader = pd.read_csv(csv_path,
-#                          delimiter=',', 
-#                          header=0, 
-#                          converters={'ids' : self.to_np_array}
-#                         )
-#         
-#         
-#         # Extract the sentences and labels of our training 
-#         # set as numpy ndarrays.
-#         labels = df.leaning.values
-#         # Labels must be int-encoded:
-#         label_encodings = []
-#         for i in range(len(labels)):
-#             if labels[i] == 'right':
-#                 label_encodings.append(0)
-#             if labels[i] == 'left':
-#                 label_encodings.append(1)
-#             if labels[i] == 'neutral':
-#                 label_encodings.append(2)
-#         
-#         # Grab the BERT index ints version of the tokens:
-#         input_ids = self.train_set.ids
-#         
-#         # Create attention masks
-#         attention_masks = []
-#         
-#         # Create a mask of 1s for each token followed by 0s for padding
-#         for seq in input_ids:
-#             #seq_mask = [float(i>0) for i in seq]
-#             seq_mask = [int(i>0) for i in seq]
-#             attention_masks.append(seq_mask)
-#         
-#         return (label_encodings, input_ids, attention_masks)
-#         
 # -------------------- Main ----------------
 if __name__ == '__main__':
     
