@@ -17,7 +17,6 @@ import random
 import time
 
 import GPUtil
-from scipy.linalg.decomp import hessenberg
 
 sys.path.append(os.path.dirname(__file__))
 
@@ -231,7 +230,11 @@ class PoliticalLeaningsAnalyst(object):
         if self.gpu_obj is None:
             # This should not happen:
             raise NoGPUAvailable(f"GPU availability yields dev Id {device_id}; yet none of GPUs has that id")
-
+        
+        # Initialize a string to use for moving 
+        # tensors between GPU and cpu with their
+        # to(device=...) method:
+        self.cuda_dev = f"cuda:{device_id}" 
         return device_id 
     
 #     #------------------------------------
@@ -349,7 +352,7 @@ class PoliticalLeaningsAnalyst(object):
         
         # Tell pytorch to run this model on the GPU.
         if self.gpu_device != 'cpu':
-            model.to('cuda')
+            model.to(device=self.cuda_dev)
         # Note: AdamW is a class from the huggingface library (as opposed to pytorch) 
         # I believe the 'W' stands for 'Weight Decay fix"
         optimizer = AdamW(model.parameters(),
@@ -458,6 +461,12 @@ class PoliticalLeaningsAnalyst(object):
             # as a dict in the following list:
             self.gpu_status_history = []
 
+            if self.gpu_device != 'cpu':
+                optimizer = optimizer.to('cpu')
+                scheduler = scheduler.to('cpu')
+                cuda.empty_cache()
+                model     = model.to(self.cuda_dev)
+                
             # For each batch of training data...
             # Tell data loader to pull from the train sample queue:
             dataloader.switch_to_split('train')
@@ -486,9 +495,10 @@ class PoliticalLeaningsAnalyst(object):
                         b_input_mask = batch['attention_mask']
                         b_labels = batch['label']
                     else:
-                        b_input_ids = batch['tok_ids'].to(device=f"cuda:{self.gpu_device}")
-                        b_input_mask = batch['attention_mask'].to(device=f"cuda:{self.gpu_device}")
-                        b_labels = batch['label'].to(device=f"cuda:{self.gpu_device}")
+                        b_input_ids = batch['tok_ids'].to(device=self.cuda_dev)
+                        b_input_mask = batch['attention_mask'].to(device=self.cuda_dev)
+                        b_labels = batch['label'].to(device=self.cuda_dev)
+                        model = model.to(device=self.cuda_dev)
             
                     # Always clear any previously calculated gradients before performing a
                     # backward pass. PyTorch doesn't do this automatically because 
@@ -528,40 +538,42 @@ class PoliticalLeaningsAnalyst(object):
                     # Perform a backward pass to calculate the gradients.
                     train_loss.backward()
                     
+                    # Clip the norm of the gradients to 1.0.
+                    # This is to help prevent the "exploding gradients" problem.
+                    # From torch:
+                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            
                     if self.gpu_device != 'cpu':
                         del b_input_ids
                         del b_input_mask
                         del b_labels
                         del train_loss
                         del logits
+                        model = model.to('cpu')
                         cuda.empty_cache()
-    
-                    # Note GPU usage:
-                    if self.gpu_device != 'cpu':
+                        optimizer = optimizer.to(self.cuda_dev)
                         self.history_checkpoint(epoch_i, sample_counter,'post_model_freeing')
+     
     
-                    # Clip the norm of the gradients to 1.0.
-                    # This is to help prevent the "exploding gradients" problem.
-                    # From torch:
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            
                     # Update parameters and take a sample_counter using the computed gradient.
                     # The optimizer dictates the "update rule"--how the parameters are
                     # modified based on their gradients, the learning rate, etc.
                     
-                    # Note GPU usage:
-                    if self.gpu_device != 'cpu':
-                        self.history_checkpoint(epoch_i, sample_counter,'pre_optimizer')
-
                     optimizer.step()
                     
                     # Note GPU usage:
                     if self.gpu_device != 'cpu':
+                        optimizer = optimizer.to('cpu')
+                        cuda.empty_cache()
                         self.history_checkpoint(epoch_i, sample_counter,'post_optimizer')
-            
+                        scheduler = scheduler.to(self.cuda_dev)
+                        
                     # Update the learning rate.
                     scheduler.step()
             
+                    if self.gpu_device != 'cpu':
+                        optimizer = scheduler.to('cpu')
+
                 # Calculate the average train_loss over all of the batches.
                 avg_train_loss = total_train_loss / len(dataloader)
                 avg_train_accuracy = total_train_accuracy / len(dataloader)
@@ -614,9 +626,9 @@ class PoliticalLeaningsAnalyst(object):
                         b_input_mask = batch['attention_mask']
                         b_labels = batch['label']
                     else:
-                        b_input_ids = batch['tok_ids'].to(device=f"cuda:{self.gpu_device}")
-                        b_input_mask = batch['attention_mask'].to(device=f"cuda:{self.gpu_device}")
-                        b_labels = batch['label'].to(device=f"cuda:{self.gpu_device}")
+                        b_input_ids = batch['tok_ids'].to(device=self.cuda_dev)
+                        b_input_mask = batch['attention_mask'].to(device=self.cuda_dev)
+                        b_labels = batch['label'].to(device=self.cuda_dev)
                     
                     # Tell pytorch not to bother with constructing the compute graph during
                     # the forward pass, since this is only needed for backprop (training).
@@ -711,9 +723,9 @@ class PoliticalLeaningsAnalyst(object):
                 b_input_mask = batch['attention_mask']
                 b_labels = batch['label']
             else:
-                b_input_ids = batch['tok_ids'].to(device=f"cuda:{self.gpu_device}")
-                b_input_mask = batch['attention_mask'].to(device=f"cuda:{self.gpu_device}")
-                b_labels = batch['label'].to(device=f"cuda:{self.gpu_device}")
+                b_input_ids = batch['tok_ids'].to(device=self.cuda_dev)
+                b_input_mask = batch['attention_mask'].to(device=self.cuda_dev)
+                b_labels = batch['label'].to(device=self.cuda_dev)
             
             # Telling the model not to compute or store gradients, saving memory and 
             # speeding up prediction
