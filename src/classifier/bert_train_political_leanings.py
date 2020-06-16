@@ -548,7 +548,16 @@ class PoliticalLeaningsAnalyst(object):
                     # Update parameters and take a sample_counter using the computed gradient.
                     # The optimizer dictates the "update rule"--how the parameters are
                     # modified based on their gradients, the learning rate, etc.
+                    
+                    # Note GPU usage:
+                    if self.gpu_device != 'cpu':
+                        self.history_checkpoint(epoch_i, sample_counter,'pre_optimizer')
+
                     optimizer.step()
+                    
+                    # Note GPU usage:
+                    if self.gpu_device != 'cpu':
+                        self.history_checkpoint(epoch_i, sample_counter,'post_optimizer')
             
                     # Update the learning rate.
                     scheduler.step()
@@ -663,7 +672,12 @@ class PoliticalLeaningsAnalyst(object):
                     )
             except Exception as e:
                 msg = f"During train/validate: {repr(e)}\n"
-                msg += f"GPU use history: {self.gpu_status_history}"
+                if self.gpu_device != 'cpu':
+                    msg += "GPU use history:\n"
+                    for chckpt_dict in self.gpu_status_history:
+                        for event_info in chckpt_dict.keys():
+                            msg += f"    {event_info}:      {chckpt_dict[event_info]}\n"
+    
                 raise TrainError(msg)
                 
         self.log.info("")
