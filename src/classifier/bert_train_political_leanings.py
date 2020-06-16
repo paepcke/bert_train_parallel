@@ -207,7 +207,10 @@ class PoliticalLeaningsAnalyst(object):
         # as OK to use GPU:
         
         try:
-            device_id = GPUtil.getFirstAvailable()
+            # If a GPU is available, the following returns
+            # a one-element list of GPU ids. Else it throws
+            # an error:
+            device_id = GPUtil.getFirstAvailable()[0]
         except RuntimeError:
             # If caller wants non-availability of GPU
             # even though GPUs are installed to be an 
