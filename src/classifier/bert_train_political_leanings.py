@@ -498,9 +498,9 @@ class PoliticalLeaningsAnalyst(object):
                     b_input_mask = batch['attention_mask']
                     b_labels = batch['label']
                 else:
-                    b_input_ids = batch[0].to(self.gpu_device)
-                    b_input_mask = batch[1].to(self.gpu_device)
-                    b_labels = batch[2].to(self.gpu_device)
+                    b_input_ids = batch['tok_ids'].to(self.gpu_device)
+                    b_input_mask = batch['attention_mask'].to(self.gpu_device)
+                    b_labels = batch['label'].to(self.gpu_device)
         
                 # Always clear any previously calculated gradients before performing a
                 # backward pass. PyTorch doesn't do this automatically because 
