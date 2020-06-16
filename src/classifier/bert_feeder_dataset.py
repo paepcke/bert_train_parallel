@@ -18,10 +18,11 @@ from pandas.core.frame import DataFrame
 from torch.utils.data import Dataset
 
 import numpy as np
-from classifier.logging_service import LoggingService
-from classifier.text_augmentation import TextAugmenter
+from logging_service import LoggingService
+from text_augmentation import TextAugmenter
 
 TESTING = False
+#TESTING = True
 
 class BertFeederDataset(Dataset):
     '''

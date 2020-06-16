@@ -154,6 +154,11 @@ class PoliticalLeaningsAnalyst(object):
         self.log.info(f"Saving model to {model_save_path} ...")
         with open(model_save_path, 'wb') as fd:
             torch.save(model, fd)
+            
+        (path, _ext) = os.path.splitext(model_save_path)
+        predictions_path = f"{path}_predictions.np"
+        self.log.info(f"Saving predictions to {predictions_path}")
+        np.save(predictions_path, predictions)
         
         #print("Copying model to Google Drive")
 
@@ -476,7 +481,7 @@ class PoliticalLeaningsAnalyst(object):
                     elapsed = self.log.info(f"{self.format_time(time.time() - t0)}") 
                     
                     # Report progress.
-                    print('  Batch {:>5,}  of  {:>5,}.    Elapsed: {:}.'.format(step, len(dataloader), elapsed))
+                    self.log.info('  Batch {:>5,}  of  {:>5,}.    Elapsed: {:}.'.format(step, len(dataloader), elapsed))
         
                 # Unpack this training batch from our dataloader. 
                 #
@@ -652,10 +657,10 @@ class PoliticalLeaningsAnalyst(object):
                     'Validation Time': validation_time
                 }
             )
-        print("")
-        print("Training complete!")
+        self.log.info("")
+        self.log.info("Training complete!")
         
-        print("Total training took {:} (h:mm:ss)".format(self.format_time(time.time()-total_t0)))
+        self.log.info("Total training took {:} (h:mm:ss)".format(self.format_time(time.time()-total_t0)))
         
         datetime.datetime.now().isoformat()
 
@@ -710,7 +715,8 @@ class PoliticalLeaningsAnalyst(object):
                 {
                     'Test Loss': loss,
                     'Test Accuracy': self.accuracy(logits, b_labels),
-                    'Matthews corrcoef': self.matthews_corrcoef(logits, b_labels)
+                    'Matthews corrcoef': self.matthews_corrcoef(logits, b_labels),
+                    'Confusion matrix' : self.confusion_matrix(logits, b_labels)
                 }
                 
         return(predictions, true_labels)
@@ -752,7 +758,37 @@ class PoliticalLeaningsAnalyst(object):
         return mcc
         
         
+    #------------------------------------
+    # confusion_matrix 
+    #-------------------
+    
+    def confusion_matrix(self, 
+                         logits_or_classes, 
+                         y_true, 
+                         matrix_labels=[0, 1, 2]):
+        '''
+        Print and return the confusion matrix
+        '''
+        # Format confusion matrix:
+             
+        #             right   left    neutral
+        #     right
+        #     left
+        #     neutral
+
+        if len(logits_or_classes.shape) > 1:
+            predicted_classes = self.logits_to_classes(logits_or_classes)
+         
+        n_by_n_conf_matrix = confusion_matrix(y_true, predicted_classes, matrix_labels) 
+           
+        self.log.info('Confusion Matrix :')
+        self.log.info(n_by_n_conf_matrix) 
+        self.log.info(f'Accuracy Score :{accuracy_score(y_true, predicted_classes)}')
+        self.log.info('Report : ')
+        self.log.info(classification_report(y_true, predicted_classes))
         
+        return n_by_n_conf_matrix
+
 #     #------------------------------------
 #     # compute_matthews_coefficient 
 #     #-------------------
@@ -798,28 +834,26 @@ class PoliticalLeaningsAnalyst(object):
 #         # Calculate the MCC
 #         mcc = matthews_corrcoef(flat_true_labels, flat_predictions)
 #         
-#         print('Total MCC: %.3f' % mcc)
+#         self.log.info('Total MCC: %.3f' % mcc)
 #         return mcc
 
     #------------------------------------
     # print_test_results 
     #-------------------
     
-    #*****def print_test_results(self, dataloader, predictions, true_labels):
     def print_test_results(self):
-        print(self.training_stats)
-        #***********
+        self.log.info(self.training_stats)
         return
         #***********
-        test_count = 0
-        unsure_count = 0
-        count = 0
-        neutral_count = 0
-        neutral_test = 0
-        left_test = 0
-        left_count = 0
-        right_test = 0
-        right_count = 0
+#         test_count = 0
+#         unsure_count = 0
+#         count = 0
+#         neutral_count = 0
+#         neutral_test = 0
+#         left_test = 0
+#         left_count = 0
+#         right_test = 0
+#         right_count = 0
         
 #         for i in range(len(self.dataloader)):
 #             y_label = flat_predictions[i]
@@ -881,8 +915,8 @@ class PoliticalLeaningsAnalyst(object):
         if os.path.exists(model_file):
             print(f"File {model_file} exists")
             print("If intent is to load it, go to cell 'Start Here...'")
-            print("Else remove on google drive, or change model_file name")
-            print("Removal instructions: Either execute 'os.remove(model_file)', or do it in Google Drive")
+            self.log.info("Else remove on google drive, or change model_file name")
+            self.log.info("Removal instructions: Either execute 'os.remove(model_file)', or do it in Google Drive")
             sys.exit(1)
 
         # File does not exist. But ensure that all the 
@@ -924,16 +958,16 @@ class PoliticalLeaningsAnalyst(object):
         # Get all of the model's parameters as a list of tuples.
         params = list(model.named_parameters())
         
-        print('The BERT model has {:} different named parameters.\n'.format(len(params)))
-        print('==== Embedding Layer ====\n')
+        self.log.info('The BERT model has {:} different named parameters.\n'.format(len(params)))
+        self.log.info('==== Embedding Layer ====\n')
         for p in params[0:5]:
-            print("{:<55} {:>12}".format(p[0], str(tuple(p[1].size()))))
-        print('\n==== First Transformer ====\n')
+            self.log.info("{:<55} {:>12}".format(p[0], str(tuple(p[1].size()))))
+        self.log.info('\n==== First Transformer ====\n')
         for p in params[5:21]:
-            print("{:<55} {:>12}".format(p[0], str(tuple(p[1].size()))))
-        print('\n==== Output Layer ====\n')
+            self.log.info("{:<55} {:>12}".format(p[0], str(tuple(p[1].size()))))
+        self.log.info('\n==== Output Layer ====\n')
         for p in params[-4:]:
-            print("{:<55} {:>12}".format(p[0], str(tuple(p[1].size()))))
+            self.log.info("{:<55} {:>12}".format(p[0], str(tuple(p[1].size()))))
 
     #------------------------------------
     # plot_train_val_loss 
@@ -1167,6 +1201,9 @@ if __name__ == '__main__':
     
     pa = PoliticalLeaningsAnalyst(csv_path,
                                   text_col_name='message',
-                                  label_col_name='leaning'
+                                  label_col_name='leaning',
+                                  #*********
+                                  #epochs=1
+                                  #*********
                                   )
     pa.print_test_results()
