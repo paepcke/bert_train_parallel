@@ -462,8 +462,6 @@ class PoliticalLeaningsAnalyst(object):
             self.gpu_status_history = []
 
             if self.gpu_device != 'cpu':
-                scheduler = scheduler.to('cpu')
-                cuda.empty_cache()
                 model     = model.to(self.cuda_dev)
                 
             # For each batch of training data...
@@ -563,7 +561,6 @@ class PoliticalLeaningsAnalyst(object):
                     if self.gpu_device != 'cpu':
                         cuda.empty_cache()
                         self.history_checkpoint(epoch_i, sample_counter,'post_optimizer')
-                        scheduler = scheduler.to(self.cuda_dev)
                         
                     # Update the learning rate.
                     scheduler.step()
