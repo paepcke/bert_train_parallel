@@ -6,7 +6,7 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setup(
-    name = "colab_server",
+    name = "facebook_ad_classifier",
     version = "0.1",
     packages = find_packages(),
 
@@ -26,6 +26,7 @@ setup(
                         'portpicker>=1.3.1',
                         'transformers>=2.11.0',
                         'seaborn>=0.10.1',
+                        'GPUtil>=1.4.0',
                         ],
 
                         #pytorch-nlp
