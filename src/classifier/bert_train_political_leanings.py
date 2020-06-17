@@ -1085,13 +1085,16 @@ class PoliticalLeaningsAnalyst(object):
         @param logits: array of class logits
         @type logits: [[float]] or tensor([[float]])
         '''
-        # Run argmax on every sample's logits array,
+        # Run amax on every sample's logits array,
         # generating a class in place of each array.
-        # The .numpy() turns the resulting tensor to 
-        # a numpy array. The detach() is needed to get
+        # The detach() is needed to get
         # just the tensors, without the gradient function
-        # from the tensor+grad:
-        pred_classes = tf.map_fn(np.argmax, logits.detach(), dtype=np.int16).numpy()
+        # from the tensor+grad. The [0] is needed, b/c
+        # the np.nonzero() returns a tuple whose only
+        # element is a one-valued array.
+        # There *must* be a more elegant way to do this! 
+        pred_classes = [int(np.nonzero(row == np.amax(row))[0]) \
+                        for row in logits.detach()]
         return pred_classes
 
     #------------------------------------
