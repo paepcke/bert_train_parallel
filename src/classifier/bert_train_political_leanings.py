@@ -823,7 +823,7 @@ class PoliticalLeaningsAnalyst(object):
         else:
             predicted_classes = logits_or_classes
          
-        n_by_n_conf_matrix = confusion_matrix(y_true, predicted_classes, matrix_labels) 
+        n_by_n_conf_matrix = confusion_matrix(y_true, predicted_classes, labels=matrix_labels) 
            
         self.log.info('Confusion Matrix :')
         self.log.info(n_by_n_conf_matrix) 
@@ -1059,7 +1059,10 @@ class PoliticalLeaningsAnalyst(object):
             # This call will also move the result to CPU:
             predicted_classes = self.logits_to_classes(predicted_classes)
         if type(labels) != np.ndarray:
-            labels = labels.numpy()
+            if type(labels) == list:
+                labels = np.array(labels)
+            else:
+                labels = labels.numpy()            
         # Compute number of times prediction was equal to the label.
         return np.count_nonzero(predicted_classes == labels) / len(labels)
 
@@ -1094,7 +1097,7 @@ class PoliticalLeaningsAnalyst(object):
         # element is a one-valued array.
         # There *must* be a more elegant way to do this! 
         pred_classes = [int(np.nonzero(row == np.amax(row))[0]) \
-                        for row in logits.detach()]
+                        for row in logits.detach().numpy()]
         return pred_classes
 
     #------------------------------------
