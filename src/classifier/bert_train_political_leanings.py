@@ -102,7 +102,7 @@ class PoliticalLeaningsAnalyst(object):
                  text_col_name='text',
                  label_col_name='label',
                  epochs=4,
-                 batch_size=8,
+                 batch_size=128,
                  sequence_len=128,
                  learning_rate=3e-5
                  ):
@@ -514,6 +514,13 @@ class PoliticalLeaningsAnalyst(object):
                                          token_type_ids=None, 
                                          attention_mask=b_input_mask, 
                                          labels=b_labels)
+                    
+                    if self.gpu_device != 'cpu':
+                        b_input_ids = b_input_ids.to('cpu')
+                        logits = logits.to('cpu')
+                        b_labels = b_labels.to('cpu')
+                        del b_input_mask
+                        cuda.empty_cache()                    
     
                     train_acc = self.accuracy(logits, b_labels)
                     total_train_accuracy += train_acc
@@ -538,7 +545,6 @@ class PoliticalLeaningsAnalyst(object):
             
                     if self.gpu_device != 'cpu':
                         del b_input_ids
-                        del b_input_mask
                         del b_labels
                         del train_loss
                         del logits
@@ -631,7 +637,10 @@ class PoliticalLeaningsAnalyst(object):
                                                    token_type_ids=None, 
                                                    attention_mask=b_input_mask,
                                                    labels=b_labels)
-                        
+                    if self.gpu_device != 'cpu':
+                        logits = logits.to('cpu')
+                        b_labels = b_labels.to('cpu')
+                                            
                     # Accumulate the validation loss and accuracy
                     total_val_loss += val_loss.item()
                     total_val_accuracy += self.accuracy(logits, b_labels)
@@ -726,10 +735,7 @@ class PoliticalLeaningsAnalyst(object):
             # are not already:
             if self.gpu_device != 'cpu':
                 logits = logits.to('cpu')
-                logits = logits.detach().numpy()
-                batch  = batch.to('cpu')
-                b_labels = batch['label'].numpy()
-                del loss
+                b_labels = b_labels.to('cpu')
                 cuda.empty_cache()
 
             # Get the class prediction from the 
@@ -748,7 +754,11 @@ class PoliticalLeaningsAnalyst(object):
                     'Matthews corrcoef': self.matthews_corrcoef(all_predictions, all_labels),
                     'Confusion matrix' : self.confusion_matrix(all_predictions, all_labels)
                 }
-                
+
+        if self.gpu_device != 'cpu':
+            del loss
+            cuda.empty_cache()
+
         return(all_predictions, all_labels)
 
 
@@ -1048,9 +1058,7 @@ class PoliticalLeaningsAnalyst(object):
             len(predicted_classes.shape) > 1:
             # This call will also move the result to CPU:
             predicted_classes = self.logits_to_classes(predicted_classes)
-        if type(labels) in (torch.Tensor, tf.Tensor):
-            if self.gpu_device != 'cpu':
-                labels = labels.to('cpu')
+        if type(labels) != np.ndarray:
             labels = labels.numpy()
         # Compute number of times prediction was equal to the label.
         return np.count_nonzero(predicted_classes == labels) / len(labels)
@@ -1083,8 +1091,6 @@ class PoliticalLeaningsAnalyst(object):
         # a numpy array. The detach() is needed to get
         # just the tensors, without the gradient function
         # from the tensor+grad:
-        if self.gpu_device != 'cpu':
-            logits = logits.to('cpu')
         pred_classes = tf.map_fn(np.argmax, logits.detach(), dtype=np.int16).numpy()
         return pred_classes
 
