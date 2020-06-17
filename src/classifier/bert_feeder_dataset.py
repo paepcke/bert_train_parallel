@@ -54,11 +54,92 @@ class BertFeederDataset(Dataset):
 
     def __init__(self,
                  csv_path,
+                 label_mapping,
                  sqlite_path=None,
                  sequence_len=None,
                  text_col_name=None,
                  label_col_name=None,
                  ):
+        '''
+        A dataset for the context of Bert training.        
+        One usually interacts with an instance of this
+        class through a BertFeederDataloader instance
+        (see bert_feeder_dataloader.py).
+        
+        This class is a subclass of the torch.util.Dataset
+        class, and behaves as such. It can act as a stream
+        of input sentences, or be a dict-like data source.
+        For the dict-like behavior: 
+        
+            my_dataset[row_num]
+            
+        For the stream behavior: treat my_dataset as an
+        iterator. 
+        
+        An additional feature is the option for integrated
+        train/validation/test splits. Calling split_dataset()
+        internally produces input queues that feed three 
+        iterators. Callers switch between these iterators via
+        the switch_to_split() method. The splits can be reset
+        to their beginnings using the reset() method.
+        
+        Takes a CSV file, and generates an Sqlite database
+        that holds the integer indexes of the collection
+        vocab into the BERT vocab, the tokens, and the
+        labels. The CSV file can have arbitrary columns;
+        only two are required: a column with the raw text
+        to be processed through a BERT model, and a column
+        with the true labels. The column names default to
+        
+          BertFeederDataset.TEXT_COL_NAME
+          BertFeederDataset.LABEL_COL_NAME
+          
+        These defaults can be changed in the __init__() call
+        or in the class variable init.
+        
+        The label_mapping must be an OrderedDict mapping
+        the textual labels in the CSV file to integers 0,1,...
+        
+        Ex CSV:
+        
+          id,     message,       page,    leaning
+
+         165,"We are the..." ,http://...,  left        
+            ,"Foo is bar..." ,   ...    ,  right
+                    ...
+        
+        In this example the important cols are 'message', and 'leaning
+        the label_mapping might be:
+        
+            OrderedDict({'right'   : 0,
+                         'left'    : 1,
+                         'neutral' : 2})
+        
+        Sequence length is the maximum number of text input 
+        tokens into the model in one input sentence. A 
+        typical number is 128. If input texts in the CSV are 
+        longer than sequence_len, one or more additional input 
+        sentences are constructed with the same label as the
+        long-text row. Shorter sequences are padded.
+        
+        @param csv_path: path to CSV file. If sqlite_path is
+            provided, and exists, the database at that location
+            is used, instead of importing the CSV file. If not,
+            an Sqlite db will be created in the same dir as
+            csv_path. 
+        @type csv_path: str
+        @param label_mapping: mapping from text labels to ints
+        @type label_mapping: OrderedDict({str : int})
+        @param sqlite_path: path where the Sqlite db will be created
+        @type sqlite_path: str
+        @param sequence_len: width of BERT model input sentences 
+            in number of tokens.
+        @type sequence_len: int
+        @param text_col_name: CSV column that holds text to process
+        @type text_col_name: str
+        @param label_col_name: CSV column that holds labels.
+        @type label_col_name: str
+        '''
 
         self.log = LoggingService()
 
@@ -71,21 +152,27 @@ class BertFeederDataset(Dataset):
             self.label_col_name = self.LABEL_COL_NAME
         else:
             self.text_col_name = text_col_name
+
+        self.label_mapping = label_mapping
             
         if sqlite_path is None:
             (file_path, _ext) = os.path.splitext(csv_path)
             sqlite_path = file_path + '.sqlite'
 
         #*********
-        if os.path.exists(sqlite_path):
-            os.remove(sqlite_path)
+        #if os.path.exists(sqlite_path):
+        #    os.remove(sqlite_path)
         #*********
             
         if os.path.exists(sqlite_path):
             self.log.info(f"Using existing db {sqlite_path} (not raw csv)")
             self.db = sqlite3.connect(sqlite_path)
             self.db.row_factory = sqlite3.Row 
-            
+            self.sample_ids = list(self.db.execute('''
+                      SELECT ROWID AS sample_id from Samples
+                      '''
+            ))
+
         else:
             # Fill the sqlite db with records, each
             # containing sample_id, toc_ids, label, attention_mask.
@@ -182,7 +269,10 @@ class BertFeederDataset(Dataset):
            attention_mask str   e.g. [1,0,0,1,...]
         
         CSV file must contain at least a column
-        called self.text_col_name and self.table_col_name
+        called self.text_col_name and self.table_col_name.
+        The sample_id column (a primary key) is implemented
+        through Sqlite's built-in ROWID, and is automatically
+        maintained by Sqlite.
         
         
         @param csv_path: 
@@ -385,16 +475,13 @@ class BertFeederDataset(Dataset):
         # sequence_len:
         
         label = row[self.label_col_name]
-        if label == 'right':
-            label_encoding = 0
-        elif label == 'left':
-            label_encoding = 1
-        elif label == 'neutral':
-            label_encoding = 2
-        else:
+        try:
+            label_encoding = self.label_mapping[label]
+        except KeyError:
+            # A label in the CSV file that was not
+            # anticipated in the caller's label_mapping dict
             self.log.err(f"Unknown label encoding: {label}")
             return
-            
         
         for id_dict in id_dicts:
             id_dict['label'] = label_encoding 

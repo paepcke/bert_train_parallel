@@ -17,6 +17,7 @@ import random
 import time
 
 import GPUtil
+from _collections import OrderedDict
 
 sys.path.append(os.path.dirname(__file__))
 
@@ -91,6 +92,11 @@ class PoliticalLeaningsAnalyst(object):
 #     SPACE_TO_COMMA_PAT = re.compile(r'([0-9])[\s]+')
     
     RANDOM_SEED = 3631
+    # Modify the following for different, or
+    # additional labels (needs testing):
+    LABEL_ENCODINGS=OrderedDict({'right'  : 0,
+                                 'left'   : 1,
+                                 'neutral': 2})
     
     #------------------------------------
     # Constructor 
@@ -104,7 +110,8 @@ class PoliticalLeaningsAnalyst(object):
                  epochs=4,
                  batch_size=128,
                  sequence_len=128,
-                 learning_rate=3e-5
+                 learning_rate=3e-5,
+                 label_encodings=None
                  ):
         '''
         Number of epochs: 2, 3, 4 
@@ -115,6 +122,10 @@ class PoliticalLeaningsAnalyst(object):
         self.batch_size = batch_size
         self.epochs     = epochs
         
+        if label_encodings is None:
+            self.label_encodings = self.LABEL_ENCODINGS
+        else:
+            self.label_encodings = label_encodings
         # The following call also sets self.gpu_obj
         # to a GPUtil.GPU instance, so we can check
         # on the GPU status along the way:
@@ -126,6 +137,7 @@ class PoliticalLeaningsAnalyst(object):
             model_save_path = file_root + '.sav'
         # Preparation:
         dataset = BertFeederDataset(csv_path,
+                                    self.label_encodings,
                                     text_col_name=text_col_name,
                                     label_col_name=label_col_name,
                                     sequence_len=sequence_len
@@ -237,83 +249,6 @@ class PoliticalLeaningsAnalyst(object):
         self.cuda_dev = f"cuda:{device_id}" 
         return device_id 
     
-#     #------------------------------------
-#     # load_dataset 
-#     #-------------------
-# 
-#     def load_dataset(self, path):
-# 
-#         # The Pandas.to_csv() method writes numeric Series 
-#         # as a string: "[ 10   20   30]", so need to replace
-#         # the white space with commas. Done via the following
-#         # conversion function:
-#         
-#         # Find a digit followed by at least one whitespace: space or
-#         # newline. Remember the digit as a capture group: the parens:
-#         
-# 
-#         
-#         df = pd.read_csv(path,
-#                          delimiter=',', 
-#                          header=0, 
-#                          converters={'ids' : self.to_np_array}
-#                         )
-#         self.train_set = df
-#         (labels, input_ids, attention_masks) = self.init_label_info(df)
-# 
-#         input_ids = torch.tensor(input_ids)
-#         attention_masks = torch.tensor(attention_masks)
-#         labels = torch.tensor(labels)
-# 
-#         data = TensorDataset(input_ids, attention_masks, labels)
-#         sampler = SequentialSampler(data)
-#         dataloader = DataLoader(data, 
-#                                 sampler=sampler, 
-#                                 batch_size=self.batch_size)
-#         return dataloader
-
-    #------------------------------------
-    # init_label_info 
-    #-------------------
-    
-    def init_label_info(self, df):
-        '''
-        Extract labels and input_ids of a dataset.
-        Compute attention masks.
-        
-        @param df: data frame with at least columns
-            label, tokens, input_ids
-        @type df: DataFrame
-        @return: (labels, input_ids, attention_masks)
-        '''
-        
-        # Extract the sentences and labels of our training 
-        # set as numpy ndarrays.
-        labels = df.leaning.values
-        # Labels must be int-encoded:
-        label_encodings = []
-        for i in range(len(labels)):
-            if labels[i] == 'right':
-                label_encodings.append(0)
-            if labels[i] == 'left':
-                label_encodings.append(1)
-            if labels[i] == 'neutral':
-                label_encodings.append(2)
-        
-        # Grab the BERT index ints version of the tokens:
-        input_ids = self.train_set.ids
-        
-        # Create attention masks
-        attention_masks = []
-        
-        # Create a mask of 1s for each token followed by 0s for padding
-        for seq in input_ids:
-            #seq_mask = [float(i>0) for i in seq]
-            seq_mask = [int(i>0) for i in seq]
-            attention_masks.append(seq_mask)
-        
-        return (label_encodings, input_ids, attention_masks)
-
     #------------------------------------
     # prepare_model 
     #-------------------
@@ -747,13 +682,17 @@ class PoliticalLeaningsAnalyst(object):
             all_labels.extend(labels)
         
         self.log.info('    DONE applying model to test set.')
+        # Ordered list of label ints:
+        matrix_labels = list(self.label_encodings.values())
         self.training_stats['Testing'] = \
                 {
                     'Test Loss': loss,
                     'Test Accuracy': self.accuracy(all_predictions, all_labels),
                     'Matthews corrcoef': self.matthews_corrcoef(all_predictions, all_labels),
-                    'Confusion matrix' : self.confusion_matrix(all_predictions, all_labels)
-                }
+                    'Confusion matrix' : self.confusion_matrix(all_predictions, 
+                                                               all_labels, 
+                                                               matrix_labels=matrix_labels
+                                                               )}
 
         if self.gpu_device != 'cpu':
             del loss
@@ -805,8 +744,10 @@ class PoliticalLeaningsAnalyst(object):
     
     def confusion_matrix(self, 
                          logits_or_classes, 
-                         y_true, 
-                         matrix_labels=[0, 1, 2]):
+                         y_true,
+                         matrix_labels=None
+                         ):
+
         '''
         Print and return the confusion matrix
         '''
@@ -817,13 +758,19 @@ class PoliticalLeaningsAnalyst(object):
         #     left
         #     neutral
 
+        if matrix_labels is None:
+            matrix_labels = self.label_encodings.values()
+            
         if type(logits_or_classes) == torch.Tensor and \
             len(logits_or_classes.shape) > 1:
             predicted_classes = self.logits_to_classes(logits_or_classes)
         else:
             predicted_classes = logits_or_classes
          
-        n_by_n_conf_matrix = confusion_matrix(y_true, predicted_classes, labels=matrix_labels) 
+        n_by_n_conf_matrix = confusion_matrix(y_true, 
+                                              predicted_classes, 
+                                              labels=matrix_labels
+                                              ) 
            
         self.log.info('Confusion Matrix :')
         self.log.info(n_by_n_conf_matrix) 
