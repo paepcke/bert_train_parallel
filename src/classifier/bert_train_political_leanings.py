@@ -352,7 +352,7 @@ class PoliticalLeaningsAnalyst(object):
         
         # Tell pytorch to run this model on the GPU.
         if self.gpu_device != 'cpu':
-            model.to(device=self.cuda_dev)
+            model = model.to(device=self.cuda_dev)
         # Note: AdamW is a class from the huggingface library (as opposed to pytorch) 
         # I believe the 'W' stands for 'Weight Decay fix"
         optimizer = AdamW(model.parameters(),
@@ -461,9 +461,6 @@ class PoliticalLeaningsAnalyst(object):
             # as a dict in the following list:
             self.gpu_status_history = []
 
-            if self.gpu_device != 'cpu':
-                model     = model.to(self.cuda_dev)
-                
             # For each batch of training data...
             # Tell data loader to pull from the train sample queue:
             dataloader.switch_to_split('train')
@@ -495,7 +492,6 @@ class PoliticalLeaningsAnalyst(object):
                         b_input_ids = batch['tok_ids'].to(device=self.cuda_dev)
                         b_input_mask = batch['attention_mask'].to(device=self.cuda_dev)
                         b_labels = batch['label'].to(device=self.cuda_dev)
-                        model = model.to(device=self.cuda_dev)
             
                     # Always clear any previously calculated gradients before performing a
                     # backward pass. PyTorch doesn't do this automatically because 
@@ -546,7 +542,6 @@ class PoliticalLeaningsAnalyst(object):
                         del b_labels
                         del train_loss
                         del logits
-                        model = model.to('cpu')
                         cuda.empty_cache()
                         self.history_checkpoint(epoch_i, sample_counter,'post_model_freeing')
      
@@ -674,6 +669,7 @@ class PoliticalLeaningsAnalyst(object):
                         }
                     )
             except Exception as e:
+                self.log.err(f"GPU memory used at crash time: {self.gpu_obj.memoryUsed}")
                 msg = f"During train/validate: {repr(e)}\n"
                 if self.gpu_device != 'cpu':
                     msg += "GPU use history:\n"
