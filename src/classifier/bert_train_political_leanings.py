@@ -41,8 +41,6 @@ import pandas as pd
 import seaborn as sns
 from bert_feeder_dataloader import set_split_id
 from logging_service import LoggingService
-import tensorflow as tf
-
 
 sys.path.append(os.path.dirname(__file__))
 
