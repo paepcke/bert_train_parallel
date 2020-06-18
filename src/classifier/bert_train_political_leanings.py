@@ -194,7 +194,8 @@ class PoliticalLeaningsAnalyst(object):
         # Save the model on the VM
         self.log.info(f"Saving model to {model_save_path} ...")
         with open(model_save_path, 'wb') as fd:
-            torch.save(model, fd)
+            #torch.save(model, fd)
+            torch.save(model.state_dict(), fd)
             
         (path, _ext) = os.path.splitext(model_save_path)
         predictions_path = f"{path}_predictions.np"
