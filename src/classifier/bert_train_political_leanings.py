@@ -17,6 +17,9 @@ import random
 import time
 
 import GPUtil
+# Mixed floating point facility (Automatic Mixed Precision)
+# From Nvidia: https://nvidia.github.io/apex/amp.html
+from apex import amp
 from _collections import OrderedDict
 
 sys.path.append(os.path.dirname(__file__))
@@ -97,6 +100,18 @@ class PoliticalLeaningsAnalyst(object):
     LABEL_ENCODINGS=OrderedDict({'right'  : 0,
                                  'left'   : 1,
                                  'neutral': 2})
+
+    # Automatic Mixed Precision optimization setting:
+    
+    #   "00"  Pure 32-bit floating point (F32), therefore a no-op
+    #            Use to get lower speed, upper accuracy bound
+    #   "01"  Recommended: Mixed precision, amp figures out 
+    #           which methods should be run F16, and which F32
+    #   "02"  Also a mix; but does not patch pytorch or Tensor funcs
+    #   "03"  Pure F16. Fastest, but may not achieve stability.
+    #           Try out to get upper speed, lower accuracy bounds
+     
+    AMP_OPTIMIZATION_LEVEL = "O1"
     
     #------------------------------------
     # Constructor 
@@ -295,6 +310,13 @@ class PoliticalLeaningsAnalyst(object):
                           lr = learning_rate,
                           eps = 1e-8 # args.adam_epsilon  - default is 1e-8.
                         )
+
+        if self.gpu_device != 'cpu':
+            # Allow Amp to perform casts as required by the opt_level
+            # Second AMP related change:
+            (model, optimizer) = amp.initialize(model, 
+                                                optimizer, 
+                                                opt_level=self.AMP_OPTIMIZATION_LEVEL)
         
         # Total number of training steps is [number of batches] x [number of epochs]. 
         # (Note that this is not the same as the number of training samples).
@@ -471,8 +493,13 @@ class PoliticalLeaningsAnalyst(object):
                     total_train_loss += train_loss.item()
             
                     # Perform a backward pass to calculate the gradients.
-                    train_loss.backward()
-                    
+                    if self.gpu_device != 'cpu':
+                        # Third AMP related change:
+                        with amp.scale_loss(train_loss, optimizer) as scaled_loss:
+                            scaled_loss.backward()
+                    else:
+                        train_loss.backward()
+
                     # Clip the norm of the gradients to 1.0.
                     # This is to help prevent the "exploding gradients" problem.
                     # From torch:

@@ -27,6 +27,7 @@ setup(
                         'transformers>=2.11.0',
                         'seaborn>=0.10.1',
                         'GPUtil>=1.4.0',
+                        'pytorch-extension>=0.1' # Nvidia APEX module for mixed floating point
                         ],
 
                         #pytorch-nlp
