@@ -59,6 +59,8 @@ class BertFeederDataset(Dataset):
                  sequence_len=None,
                  text_col_name=None,
                  label_col_name=None,
+                 quiet=False,
+                 delete_db=None
                  ):
         '''
         A dataset for the context of Bert training.        
@@ -139,6 +141,12 @@ class BertFeederDataset(Dataset):
         @type text_col_name: str
         @param label_col_name: CSV column that holds labels.
         @type label_col_name: str
+        @param quiet: don't ask for confirmation about existing sqlite file:
+        @type quiet: bool
+        @param delete_db: if True, delete Sqlite db that contains the csv
+            content right from the start. If None, ask user on the command
+            line
+        @type delete_db: {None|bool}
         '''
 
         self.log = LoggingService()
@@ -159,12 +167,25 @@ class BertFeederDataset(Dataset):
             (file_path, _ext) = os.path.splitext(csv_path)
             sqlite_path = file_path + '.sqlite'
 
-        #*********
-        #if os.path.exists(sqlite_path):
-        #    os.remove(sqlite_path)
-        #*********
+        db_exists = os.path.exists(sqlite_path)
+        if not quiet: 
+            if db_exists:
+                if delete_db is None:
+                    # Ask user whether to delete db:
+                    delete_db = self.query_yes_no("Sqlite db exists; delete?", 'no')
+                if delete_db:
+                    os.remove(sqlite_path)
+                else:
+                    # Don't delete, but use it instead of
+                    # parsing the CSV file?
+                    use_db = self.query_yes_no("OK, not deleting; use instead of CSV file?",
+                                           'no')
+        else:
+            # Supposed to do default, which is to use existing 
+            # db if it exists:
+            use_db = True 
             
-        if os.path.exists(sqlite_path):
+        if os.path.exists(sqlite_path) and use_db:
             self.log.info(f"Using existing db {sqlite_path} (not raw csv)")
             self.db = sqlite3.connect(sqlite_path)
             self.db.row_factory = sqlite3.Row 
@@ -195,7 +216,15 @@ class BertFeederDataset(Dataset):
             self.log.err(f"Could not retrieve sample ids from db {sqlite_path}: {repr(e)}")
             sys.exit(1)
 
-        self.train_queue = [row['sample_id'] for row in res.fetchall()]
+        # Make a preliminary train queue with all the
+        # sample ids. If split_dataset() is called later,
+        # this queue will be replaced:
+        self.train_queue = deque(self.sample_ids)
+        self.curr_queue  = self.train_queue
+        self.saved_queues = {}
+        # Again: this saved_queues entry will be
+        # replaced upon a split:
+        self.saved_queues['train'] = self.train_queue.copy()
         self.num_samples = len(self.train_queue)
 
     #------------------------------------
@@ -508,7 +537,40 @@ class BertFeederDataset(Dataset):
                       train_percent=0.8,
                       val_percent=0.1,
                       test_percent=0.1,
+                      save_to_db=True,
                       random_seed=1845):
+        '''
+        Splits dataset into train, validation, and 
+        test sets at the given proportions. One of the
+        proportions may be set to None. In that case
+        only two splits will be created. Randomly permutes
+        samples before splitting
+        
+        The sample_ids_or_df may be a list of of
+        indices into the sqlite db of sample rows from
+        the original CSV file, or a dataframe in which 
+        each row corresponds to a sample row from the 
+        original CSV. If None, uses what this instance
+        already knows. If in doubt, let it default.
+        
+        Creates a deque (a queue) for each split, and
+        saves copies of each in a dict (saved_queues).
+        Returns a triplet with the queues. 
+        
+        @param sample_ids_or_df: list of sqlite ROWIDs, or dataframe
+        @type sample_ids_or_df: {list|pandas.dataframe}
+        @param train_percent: percentage of samples for training
+        @type train_percent: float
+        @param val_percent: percentage of samples for validation
+        @type val_percent: float
+        @param test_percent: percentage of samples for testing
+        @type test_percent: float
+        @param save_to_db: whether or not to save the indices that
+            define each split in the Sqlite db
+        @type save_to_db: bool
+        @param random_seed: seed for permuting dataset before split
+        @type random_seed: int
+        '''
 
         if sample_ids_or_df is None:
             sample_ids_or_df = self.sample_ids
@@ -550,6 +612,9 @@ class BertFeederDataset(Dataset):
         self.test_queue = deque(perm[validate_end:])
         
         self.curr_queue = self.train_queue
+        
+        if save_to_db:
+            self.save_queues(self.train_queue, self.val_queue, self.test_queue) 
         
         self.saved_queues = {}
         self.saved_queues['train'] = self.train_queue.copy()
@@ -630,3 +695,39 @@ class BertFeederDataset(Dataset):
         row['attention_mask'] = self.to_np_array(row['attention_mask'])
         return row
 
+    #------------------------------------
+    # yes_no_question 
+    #-------------------
+
+    def query_yes_no(self, question, default='yes'):
+        '''
+        Ask a yes/no question via raw_input() and return their answer.
+    
+        "question" is a string that is presented to the user.
+        "default" is the presumed answer if the user just hits <Enter>.
+            It must be "yes" (the default), "no" or None (meaning
+            an answer is required of the user).
+    
+        The "answer" return value is True for "yes" or False for "no".
+        '''
+        valid = {"yes": True, "y": True, "ye": True,
+                 "no": False, "n": False}
+        if default is None:
+            prompt = " [y/n] "
+        elif default == "yes":
+            prompt = " [Y/n] "
+        elif default == "no":
+            prompt = " [y/N] "
+        else:
+            raise ValueError("invalid default answer: '%s'" % default)
+    
+        while True:
+            sys.stdout.write(question + prompt)
+            choice = input().lower()
+            if default is not None and choice == '':
+                return valid[default]
+            elif choice in valid:
+                return valid[choice]
+            else:
+                sys.stdout.write("Please respond with 'yes' or 'no' "
+                                 "(or 'y' or 'n').\n")        

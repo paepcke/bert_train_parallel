@@ -8,7 +8,25 @@ from contextlib import contextmanager
 
 class BertFeederDataloader(DataLoader):
     '''
-    classdocs
+    A dataloader that works with instances of 
+    BertFeederDataset (see bert_feeder_dataset.py).
+    This class simply wraps such a dataset. See
+    header comment in that file for lots more
+    information, such as dataset splitting, 
+    switching between the splits, interacting
+    either as a stream or a dict. 
+    
+    Instances can be used like any other Pytorch
+    dataloader.
+    
+    This class adds a dataset split context manager.
+    It allows callers to interact temporarily with 
+    a particular split: test/validate/train, and
+    then return to the current split. Example:
+    
+      with set_split_id('validate'):
+          avg_val_accuracy = total_eval_accuracy / len(dataloader)
+    
     '''
 
     #------------------------------------

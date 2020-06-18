@@ -3,14 +3,10 @@ Created on Jun 8, 2020
 
 @author: paepcke
 '''
-#**********
-#import sys;sys.path.append(r'/Users/paepcke/.p2/pool/plugins/org.python.pydev.core_7.5.0.202001101138/pysrc')
-#import pydevd;pydevd.settrace()
-#**********    
-
-
 
 #import ast
+from _collections import OrderedDict
+import argparse
 import datetime
 import os, sys
 import random
@@ -20,10 +16,6 @@ import GPUtil
 # Mixed floating point facility (Automatic Mixed Precision)
 # From Nvidia: https://nvidia.github.io/apex/amp.html
 from apex import amp
-from _collections import OrderedDict
-
-sys.path.append(os.path.dirname(__file__))
-
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import classification_report 
 from sklearn.metrics import confusion_matrix 
@@ -33,24 +25,16 @@ import torch
 from transformers import AdamW, BertForSequenceClassification
 from transformers import get_linear_schedule_with_warmup
 
+sys.path.append(os.path.dirname(__file__))
+
 from bert_feeder_dataloader import BertFeederDataloader
+from bert_feeder_dataloader import set_split_id
 from bert_feeder_dataset import BertFeederDataset
+from logging_service import LoggingService
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from bert_feeder_dataloader import set_split_id
-from logging_service import LoggingService
-
-sys.path.append(os.path.dirname(__file__))
-
-#from torch.utils.data import DataLoader, SequentialSampler
-
-
-
-#from torch.utils.data import IterableDataset
-#from sklearn.metrics import accuracy_score 
-#???from bert_training.bert_fine_tuning_sentence_classification import df
 
 # ------------------------ Specialty Exceptions --------
 
@@ -124,14 +108,22 @@ class PoliticalLeaningsAnalyst(object):
                  batch_size=128,
                  sequence_len=128,
                  learning_rate=3e-5,
-                 label_encodings=None
+                 label_encodings=None,
+                 logfile=None,
+                 delete_db=False
                  ):
         '''
         Number of epochs: 2, 3, 4 
         '''
         
-        logfile_name = os.path.join(os.path.dirname(__file__), 'facebook_train.log')
-        self.log = LoggingService(logfile=logfile_name)
+        if logfile is None:
+            default_logfile_name = os.path.join(os.path.dirname(__file__), 'facebook_train.log')
+            self.log = LoggingService(logfile=default_logfile_name)
+        elif logfile == 'stdout':
+            self.log = LoggingService()
+        else:
+            self.log = LoggingService(logfile=logfile)
+        
         self.batch_size = batch_size
         self.epochs     = epochs
         
@@ -146,14 +138,15 @@ class PoliticalLeaningsAnalyst(object):
         self.gpu_device = self.enable_GPU()
 
         if model_save_path is None:
-            (file_root, _ext) = os.path.splitext(csv_path)
-            model_save_path = file_root + '.sav'
+            (csv_file_root, _ext) = os.path.splitext(csv_path)
+            model_save_path = csv_file_root + '_trained_model' + '.sav'
         # Preparation:
         dataset = BertFeederDataset(csv_path,
                                     self.label_encodings,
                                     text_col_name=text_col_name,
                                     label_col_name=label_col_name,
-                                    sequence_len=sequence_len
+                                    sequence_len=sequence_len,
+                                    delete_db=delete_db
                                     )
                 #sampler = SequentialSampler(dataset)
         dataloader = BertFeederDataloader(dataset, 
@@ -191,22 +184,26 @@ class PoliticalLeaningsAnalyst(object):
         test_accuracy = self.accuracy(predictions, labels)
         self.log.info(f"Accuracy on test set: {test_accuracy}")
         
-        # Save the model on the VM
+        # Save the model:
+        
         self.log.info(f"Saving model to {model_save_path} ...")
         with open(model_save_path, 'wb') as fd:
             #torch.save(model, fd)
             torch.save(model.state_dict(), fd)
-            
-        (path, _ext) = os.path.splitext(model_save_path)
-        predictions_path = f"{path}_predictions.np"
-        self.log.info(f"Saving predictions to {predictions_path}")
-        np.save(predictions_path, predictions)
-        
-        #print("Copying model to Google Drive")
 
-#       Note: To maximize the score, we should remove the "validation set", 
-#       which we used to help determine how many epochs to train for, and 
-#       train on the entire training set.
+        # Save the test predictions:
+        predictions_path = f"{csv_file_root}_testset_predictions.npy"
+        self.log.info(f"Saving predictions to {predictions_path}")
+        with open(predictions_path, 'wb') as fd:
+            torch.save(predictions, fd)
+        
+        # Save the training stats:
+        training_stats_path = f"{csv_file_root}_train_test_stats.dict"
+        with open(training_stats_path, 'wb') as fd:
+            torch.save(self.training_stats, fd)
+        
+#       Note: To maximize the score, we should now merge the 
+#       validation set back into the train set, and retrain. 
 
     #------------------------------------
     # enable_GPU 
@@ -1105,15 +1102,51 @@ class PoliticalLeaningsAnalyst(object):
             )
 # -------------------- Main ----------------
 if __name__ == '__main__':
-    
+
     data_dir = os.path.join(os.path.dirname(__file__), 'datasets')
-    csv_path = os.path.join(data_dir, "facebook_ads.csv")
     
-    pa = PoliticalLeaningsAnalyst(csv_path,
-                                  text_col_name='message',
-                                  label_col_name='leaning',
+    parser = argparse.ArgumentParser(prog=os.path.basename(sys.argv[0]),
+                                     formatter_class=argparse.RawTextHelpFormatter,
+                                     description="BERT-train from CSV, or run saved model."
+                                     )
+
+    parser.add_argument('-g', '--logfile',
+                        help="path to log file; if 'stdout' direct to display;\n" +\
+                             'Default: facebook_ads.log in script file.',
+                        default=None);
+    parser.add_argument('-t', '--text',
+                        help="name of column with text (default 'text')",
+                        default='text'
+                        )
+    parser.add_argument('-l', '--labels',
+                        help="name of column with the true labels (default: 'label')",
+                        default='label'
+                        )
+    parser.add_argument('-d', '--deletedb',
+                        help="delete current Sqlite db, which contains the CSV content.\n\
+                        If deleted, CSV file will be parsed again, else delete/use will \n\
+                        be solicited on the command line.",
+                        action='store_true',
+                        default=False
+                        )
+    parser.add_argument('csv_path',
+                        help='path to csv file to process')
+
+    args = parser.parse_args();
+
+    #**********
+    #args.csv_path = os.path.join(data_dir, "facebook_ads_clean.csv")
+    #args.text = 'text'
+    #args.labels = 'leaning'
+    #**********
+    
+    pa = PoliticalLeaningsAnalyst(args.csv_path,
+                                  text_col_name=args.text,
+                                  label_col_name=args.labels,
                                   #*********
-                                  epochs=1
+                                  epochs=1,
                                   #*********
+                                  logfile=args.logfile,
+                                  delete_db=args.deletedb
                                   )
     pa.print_test_results()
