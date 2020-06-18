@@ -4,7 +4,6 @@ Created on Jun 8, 2020
 @author: paepcke
 '''
 
-#import ast
 from _collections import OrderedDict
 import argparse
 import datetime
@@ -31,10 +30,8 @@ from bert_feeder_dataloader import BertFeederDataloader
 from bert_feeder_dataloader import set_split_id
 from bert_feeder_dataset import BertFeederDataset
 from logging_service import LoggingService
-import matplotlib.pyplot as plt
+
 import numpy as np
-import pandas as pd
-import seaborn as sns
 
 # ------------------------ Specialty Exceptions --------
 
@@ -803,73 +800,6 @@ class PoliticalLeaningsAnalyst(object):
         
         return n_by_n_conf_matrix
 
-    #------------------------------------
-    # print_test_results 
-    #-------------------
-    
-    def print_test_results(self):
-        self.log.info(self.training_stats)
-        return
-        #***********
-#         test_count = 0
-#         unsure_count = 0
-#         count = 0
-#         neutral_count = 0
-#         neutral_test = 0
-#         left_test = 0
-#         left_count = 0
-#         right_test = 0
-#         right_count = 0
-        
-#         for i in range(len(self.dataloader)):
-#             y_label = flat_predictions[i]
-#             category = flat_true_labels[i]
-#             count += 1
-#             if (category == 2):
-#                 neutral_count += 1
-#             if (category == 1):
-#                 left_count += 1
-#             if (category == 0):
-#                 right_count += 1
-#             if (y_label == category):
-#                 test_count += 1
-#                 if (category == 2):
-#                     neutral_count += 1
-#                 if (category == 0):
-#                     right_test += 1
-#                 if (category == 1):
-#                     left_test += 1
-#                 # print("CORRECT!")
-#                 # print(df['message'][i], y_label)
-#                 # print("is : ", category)
-#             else:
-#                 # print("WRONG!")
-#                 # print(df['message'][i], y_label)
-#                 # print("is actually: ", category)
-#                 # print(test_count, "+", unsure_count, "out of", count)
-#                 pass
-#         print("neutral: ", neutral_test, "/", neutral_count)
-#         print("left: ", left_test, "/", left_count)
-#         print("right: ", right_test, "/", right_count)
-#         print(test_count, "+", unsure_count, "out of", count)
-#         
-#         print(accuracy_score(flat_true_labels, flat_predictions))
-#                 
-#         # Format confusion matrix:
-#             
-#         #             right   left    neutral
-#         #     right
-#         #     left
-#         #     neutral
-#         
-#         results = confusion_matrix(flat_true_labels, flat_predictions) 
-#           
-#         print('Confusion Matrix :')
-#         print(results) 
-#         print('Accuracy Score :',accuracy_score(flat_true_labels, flat_predictions))
-#         print('Report : ')
-#         print(classification_report(flat_true_labels, flat_predictions))
-
 
 # ---------------------- Utilities ----------------------
 
@@ -906,93 +836,6 @@ class PoliticalLeaningsAnalyst(object):
 #         proper_array_str = re.sub('\s', '', proper_array_str)
 #         # Turn from a string to array:
 #         return np.array(ast.literal_eval(proper_array_str))
-
-    #------------------------------------
-    # print_model_parms 
-    #-------------------
-
-    def print_model_parms(self, model):
-        '''
-
-        Printed out the names and dimensions of the weights for:
-        
-        1. The embedding layer.
-        2. The first of the twelve transformers.
-        3. The output layer.
-        '''
-        
-        # Get all of the model's parameters as a list of tuples.
-        params = list(model.named_parameters())
-        
-        self.log.info('The BERT model has {:} different named parameters.\n'.format(len(params)))
-        self.log.info('==== Embedding Layer ====\n')
-        for p in params[0:5]:
-            self.log.info("{:<55} {:>12}".format(p[0], str(tuple(p[1].size()))))
-        self.log.info('\n==== First Transformer ====\n')
-        for p in params[5:21]:
-            self.log.info("{:<55} {:>12}".format(p[0], str(tuple(p[1].size()))))
-        self.log.info('\n==== Output Layer ====\n')
-        for p in params[-4:]:
-            self.log.info("{:<55} {:>12}".format(p[0], str(tuple(p[1].size()))))
-
-    #------------------------------------
-    # plot_train_val_loss 
-    #-------------------
-    
-    def plot_train_val_loss(self, training_stats):
-        '''
-        View the summary of the training process.
-        '''
-        
-        # Display floats with two decimal places.
-        pd.set_option('precision', 2)
-        
-        # Create a DataFrame from our training statistics.
-        df_stats = pd.DataFrame(data=training_stats)
-        ""
-        # Use the 'epoch' as the row index.
-        df_stats = df_stats.set_index('epoch')
-        
-        # A hack to force the column headers to wrap.
-        #df = df.style.set_table_styles([dict(selector="th",props=[('max-width', '70px')])])
-        
-        # Display the table.
-        df_stats
-        
-        # Notice that, while the the training loss is 
-        # going down with each epoch, the validation loss 
-        # is increasing! This suggests that we are training 
-        # our model too long, and it's over-fitting on the 
-        # training data. 
-        
-        # Validation Loss is a more precise measure than accuracy, 
-        # because with accuracy we don't care about the exact output value, 
-        # but just which side of a threshold it falls on. 
-        
-        # If we are predicting the correct answer, but with less 
-        # confidence, then validation loss will catch this, while 
-        # accuracy will not.
-        
-        
-        # Use plot styling from seaborn.
-        sns.set(style='darkgrid')
-        
-        # Increase the plot size and font size.
-        sns.set(font_scale=1.5)
-        plt.rcParams["figure.figsize"] = (12,6)
-        
-        # Plot the learning curve.
-        plt.plot(df_stats['Training Loss'], 'b-o', label="Training")
-        plt.plot(df_stats['Valid. Loss'], 'g-o', label="Validation")
-        
-        # Label the plot.
-        plt.title("Training & Validation Loss")
-        plt.xlabel("Epoch")
-        plt.ylabel("Loss")
-        plt.legend()
-        plt.xticks([1, 2, 3, 4])
-        
-        plt.show()
 
     #------------------------------------
     # accuracy 
@@ -1149,4 +992,4 @@ if __name__ == '__main__':
                                   logfile=args.logfile,
                                   delete_db=args.deletedb
                                   )
-    pa.print_test_results()
+    #pa.print_test_results()
