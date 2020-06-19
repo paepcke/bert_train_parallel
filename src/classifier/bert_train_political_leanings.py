@@ -24,6 +24,7 @@ from torch import nn, cuda
 import torch
 from transformers import AdamW, BertForSequenceClassification
 from transformers import get_linear_schedule_with_warmup
+from rsa.common import inverse
 
 sys.path.append(os.path.dirname(__file__))
 
@@ -150,6 +151,16 @@ class PoliticalLeaningsAnalyst(object):
         dataloader = BertFeederDataloader(dataset, 
                                 #sampler=sampler, 
                                 batch_size=self.batch_size)
+
+        # Save the label_encodings dict in a db table,
+        # but reversed: int-code ==> label-str
+        inverse_label_encs = OrderedDict()
+        for (key, val) in self.label_encodings.items():
+            inverse_label_encs[str(val)] = key
+            
+        dataloader.save_dict_to_table('LabelEncodings', 
+                                      inverse_label_encs, 
+                                      delete_existing=True)
 
         self.dataloader = dataloader
 
@@ -522,9 +533,10 @@ class PoliticalLeaningsAnalyst(object):
                     # Update the learning rate.
                     scheduler.step()
             
-                # Calculate the average train_loss over all of the batches.
-                avg_train_loss = total_train_loss / len(dataloader)
-                avg_train_accuracy = total_train_accuracy / len(dataloader)
+                # Calculate the average train_loss over this mini-batches.
+                with set_split_id(dataloader, 'train'):
+                    avg_train_loss = total_train_loss / len(dataloader)
+                    avg_train_accuracy = total_train_accuracy / len(dataloader)
                 
                 # Measure how long this epoch took.
                 training_time = self.format_time(time.time() - t0)
@@ -609,30 +621,30 @@ class PoliticalLeaningsAnalyst(object):
                         del logits
                         cuda.empty_cache()
     
-                    # Calculate the average loss over all of the batches.
-                    with set_split_id(dataloader, 'validate'):
-                        avg_val_loss = total_val_loss / len(dataloader)
-                        avg_val_accuracy = total_val_accuracy / len(dataloader)
-                    
-                    # Measure how long the validation run took.
-                    validation_time = self.format_time(time.time() - t0)
-                    
-                    self.log.info(f"  Avg validation loss: {avg_val_loss:.2f}")
-                    self.log.info(f"  Avg validation accuracy: {avg_val_accuracy:.2f}")
-                    self.log.info(f"  Validation took: {validation_time}")
+                # Calculate the average loss over all of the batches.
+                with set_split_id(dataloader, 'validate'):
+                    avg_val_loss = total_val_loss / len(dataloader)
+                    avg_val_accuracy = total_val_accuracy / len(dataloader)
                 
-                    # Record all statistics from this epoch.
-                    self.training_stats['Training'].append(
-                        {
-                            'epoch': epoch_i + 1,
-                            'Training Loss': avg_train_loss,
-                            'Validation Loss': avg_val_loss,
-                            'Training Accuracy': avg_train_accuracy,
-                            'Validation Accuracy': avg_val_accuracy,
-                            'Training Time': training_time,
-                            'Validation Time': validation_time
-                        }
-                    )
+                # Measure how long the validation run took.
+                validation_time = self.format_time(time.time() - t0)
+
+                self.log.info(f"  Avg validation loss: {avg_val_loss:.2f}")
+                self.log.info(f"  Avg validation accuracy: {avg_val_accuracy:.2f}")
+                self.log.info(f"  Validation took: {validation_time}")
+            
+                # Record all statistics from this epoch.
+                self.training_stats['Training'].append(
+                    {
+                        'epoch': epoch_i + 1,
+                        'Training Loss': avg_train_loss,
+                        'Validation Loss': avg_val_loss,
+                        'Training Accuracy': avg_train_accuracy,
+                        'Validation Accuracy': avg_val_accuracy,
+                        'Training Time': training_time,
+                        'Validation Time': validation_time
+                    }
+                )
             except Exception as e:
                 self.log.err(f"GPU memory used at crash time: {self.gpu_obj.memoryUsed}")
                 msg = f"During train/validate: {repr(e)}\n"
