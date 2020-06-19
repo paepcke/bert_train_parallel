@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 '''
 Created on Jun 18, 2020
 
@@ -35,11 +36,149 @@ class BertResultAnalyzer(object):
         # Plot train/val losses by epoch:
         
         with open(res_files_dict['stats_file'], 'rb') as fd:
-            train_test_stats = torch.load(fd)
-        self.plot_train_val_loss(train_test_stats)
-        self.plot_train_val_loss(train_test_stats)
+            # Load the data struct into cpu RAM, even
+            # if it was on a GPU when it was saved:
+            train_test_stats = torch.load(fd,
+                                          map_location=torch.device('cpu')
+                                          )
+        #****** Temporary Fix *******
+        # Early version erroneously produced stats
+        # dicts with key "Validation Accuracy" being 
+        # set as "Validation Accuracy." (i.e. stray period)
+        # Fix that here if needed:
+        for epoch_res in train_test_stats['Training']:
+            try:
+                epoch_res['Validation Accuracy.']
+                epoch_res['Validation Accuracy'] = epoch_res['Validation Accuracy.']
+                del epoch_res['Validation Accuracy.']
+            except KeyError:
+                # All OK
+                pass
+        #****** End Temporary Fix **********
+        
+        self.plot_train_val_loss_and_accuracy(train_test_stats)
 
-         
+    #------------------------------------
+    # plot_train_val_loss_and_accuracy 
+    #-------------------
+    
+    def plot_train_val_loss_and_accuracy(self, training_stats):
+        '''
+        View the summary of the training process.
+        
+        @param training_stats: a dict like:
+           {
+		     'Training' : [{'epoch': 1,
+		                    'Training Loss': 0.016758832335472106,
+		                    'Validation Loss': 0.102080237865448,
+		                    'Training Accuracy': 0.00046875,
+		                    'Validation Accuracy.': 0.05,
+		                    'Training Time': '0:00:25',
+		                    'Validation Time': '0:00:01'},
+		                   {'epoch': 2,
+		                      ...
+		                   }
+		                   ]
+		   
+		     'Testing'  : {'Test Loss': tensor(1.0733),
+		                   'Test Accuracy': 0.1,
+		                   'Matthews corrcoef': 0.0,
+		                   'Confusion matrix': array([[0, 0, 0],
+		                                              [3, 1, 6],
+		                                              [0, 0, 0]])
+		                  }
+		   }
+
+        @type training_stats_info: dict
+        '''
+        
+        # Create a DataFrame from our training statistics.
+        epoch_stats_dicts = training_stats['Training']
+        
+        #********
+        # For testing when only one epoch's results
+        # are available: add some more:
+        epoch_stats_dicts.extend(
+            [
+                {'epoch': 2, 'Training Loss': 0.01250069046020508, 'Validation Loss': 0.0623801279067993, 'Training Accuracy': 0.01500625, 'Validation Accuracy.': 0.11, 'Training Time': '0:00:24', 'Validation Time': '0:00:01'},
+                {'epoch': 3, 'Training Loss': 0.00250069046020508, 'Validation Loss': 0.0323801279067993, 'Training Accuracy': 0.02500625, 'Validation Accuracy.': 0.25, 'Training Time': '0:00:24', 'Validation Time': '0:00:01'},
+                {'epoch': 4, 'Training Loss': 0.0004069046020508, 'Validation Loss': 0.0023801279067993, 'Training Accuracy': 0.01500625, 'Validation Accuracy.': 0.35, 'Training Time': '0:00:24', 'Validation Time': '0:00:01'}
+            ]
+            )
+        #********
+
+        self.plot_stats_dataframe(epoch_stats_dicts, 'loss')
+        self.plot_stats_dataframe(epoch_stats_dicts, 'accuracy')
+
+    #------------------------------------
+    # def plot_stats_dataframe 
+    #-------------------
+
+    def plot_stats_dataframe(self, epoch_stats_dicts, plot_type):
+        '''
+        plot_type: 'loss' or 'accuracy'
+        
+        @param epoch_stats_dicts:
+        @type epoch_stats_dicts:
+        @param plot_type:
+        @type plot_type:
+        '''
+        
+        # Display floats with two decimal places.
+        pd.set_option('precision', 2)
+
+        df_stats = pd.DataFrame(epoch_stats_dicts)
+        # Use the 'epoch' as the row index.
+        df_stats = df_stats.set_index('epoch')
+        
+        # A hack to force the column headers to wrap.
+        #df = df.style.set_table_styles([dict(selector="th",props=[('max-width', '70px')])])
+        
+        # Display the table.
+        df_stats
+        
+        # If you notice that, while the training loss is 
+        # going down with each epoch, the validation loss 
+        # is increasing! This suggests that we are training 
+        # our model too long, and it's over-fitting on the 
+        # training data. 
+        
+        # Validation Loss is a more precise measure than accuracy, 
+        # because with accuracy we don't care about the exact output value, 
+        # but just which side of a threshold it falls on. 
+        
+        # If we are predicting the correct answer, but with less 
+        # confidence, then validation loss will catch this, while 
+        # accuracy will not.
+        
+        # Use plot styling from seaborn.
+        sns.set(style='darkgrid')
+        
+        # Increase the plot size and font size.
+        sns.set(font_scale=1.5)
+        plt.rcParams["figure.figsize"] = (12,6)
+        
+        # Plot the learning curve.
+        if plot_type == 'loss':
+            plt.plot(df_stats['Training Loss'], 'b-o', label="Training")
+            plt.plot(df_stats['Validation Loss'], 'g-o', label="Validation")
+            # Label the plot.
+            plt.title("Training & Validation Loss")
+            plt.ylabel("Loss")
+        elif plot_type == 'accuracy':
+            plt.plot(df_stats['Training Accuracy'], 'b-o', label="Training")
+            plt.plot(df_stats['Validation Accuracy'], 'g-o', label="Validation")
+            # Label the plot.
+            plt.title("Training & Validation Accuracy")
+            plt.ylabel("Accuracy")
+
+        plt.xlabel("Epoch")
+        plt.legend()
+        plt.xticks(df_stats.index.values)
+        #plt.xticks([1, 2, 3, 4])
+        
+        plt.show(block=False)
+
     #------------------------------------
     # get_result_file_paths 
     #-------------------
@@ -80,103 +219,6 @@ class BertResultAnalyzer(object):
                 }
         
     #------------------------------------
-    # plot_train_val_loss 
-    #-------------------
-    
-    def plot_train_val_loss(self, training_stats):
-        '''
-        View the summary of the training process.
-        
-        @param training_stats: a dict like:
-           {
-		     'Training' : [{'epoch': 1,
-		                    'Training Loss': 0.016758832335472106,
-		                    'Validation Loss': 0.102080237865448,
-		                    'Training Accuracy': 0.00046875,
-		                    'Validation Accuracy.': 0.05,
-		                    'Training Time': '0:00:25',
-		                    'Validation Time': '0:00:01'},
-		                   {'epoch': 2,
-		                      ...
-		                   }
-		                   ]
-		   
-		     'Testing'  : {'Test Loss': tensor(1.0733),
-		                   'Test Accuracy': 0.1,
-		                   'Matthews corrcoef': 0.0,
-		                   'Confusion matrix': array([[0, 0, 0],
-		                                              [3, 1, 6],
-		                                              [0, 0, 0]])
-		                  }
-		   }
-
-        @type training_stats_info: dict
-        '''
-        
-        # Display floats with two decimal places.
-        pd.set_option('precision', 2)
-        
-        # Create a DataFrame from our training statistics.
-        epoch_stats_dicts = training_stats['Training']
-        
-        #********
-        # For testing when only one epoch's results
-        # are available: add some more:
-#         epoch_stats_dicts.extend(
-#             [
-#                 {'epoch': 2, 'Training Loss': 0.01250069046020508, 'Validation Loss': 0.0623801279067993, 'Training Accuracy': 0.00500625, 'Validation Accuracy.': 0.11, 'Training Time': '0:00:24', 'Validation Time': '0:00:01'},
-#                 {'epoch': 3, 'Training Loss': 0.00250069046020508, 'Validation Loss': 0.0323801279067993, 'Training Accuracy': 0.02500625, 'Validation Accuracy.': 0.15, 'Training Time': '0:00:24', 'Validation Time': '0:00:01'},
-#                 {'epoch': 4, 'Training Loss': 0.0004069046020508, 'Validation Loss': 0.0023801279067993, 'Training Accuracy': 0.01500625, 'Validation Accuracy.': 0.15, 'Training Time': '0:00:24', 'Validation Time': '0:00:01'}
-#             ]
-#             )
-        #********
-        
-        df_stats = pd.DataFrame(epoch_stats_dicts)
-        # Use the 'epoch' as the row index.
-        df_stats = df_stats.set_index('epoch')
-        
-        # A hack to force the column headers to wrap.
-        #df = df.style.set_table_styles([dict(selector="th",props=[('max-width', '70px')])])
-        
-        # Display the table.
-        df_stats
-        
-        # If you notice that, while the training loss is 
-        # going down with each epoch, the validation loss 
-        # is increasing! This suggests that we are training 
-        # our model too long, and it's over-fitting on the 
-        # training data. 
-        
-        # Validation Loss is a more precise measure than accuracy, 
-        # because with accuracy we don't care about the exact output value, 
-        # but just which side of a threshold it falls on. 
-        
-        # If we are predicting the correct answer, but with less 
-        # confidence, then validation loss will catch this, while 
-        # accuracy will not.
-        
-        # Use plot styling from seaborn.
-        sns.set(style='darkgrid')
-        
-        # Increase the plot size and font size.
-        sns.set(font_scale=1.5)
-        plt.rcParams["figure.figsize"] = (12,6)
-        
-        # Plot the learning curve.
-        plt.plot(df_stats['Training Loss'], 'b-o', label="Training")
-        plt.plot(df_stats['Validation Loss'], 'g-o', label="Validation")
-        
-        # Label the plot.
-        plt.title("Training & Validation Loss")
-        plt.xlabel("Epoch")
-        plt.ylabel("Loss")
-        plt.legend()
-        plt.xticks(df_stats.index.values)
-        #plt.xticks([1, 2, 3, 4])
-        
-        plt.show()
-        
-    #------------------------------------
     # print_model_parms 
     #-------------------
 
@@ -213,7 +255,7 @@ class BertResultAnalyzer(object):
         if training_stats_info is None:
             training_stats_info = self.training_stats
         #self.log.info(self.training_stats)
-        self.plot_train_val_loss(self.training_stats)
+        self.plot_train_val_loss_and_accuracy(self.training_stats)
         return
         #***********
 #         test_count = 0
@@ -292,8 +334,12 @@ if __name__ == '__main__':
     args = parser.parse_args();
 
     #***********
-    args.result_file = "/Users/paepcke/EclipseWorkspacesNew/facebook_ad_classifier/src/classifier/datasets/facebook_ads_clean_train_test_stats.dict"
+    #args.result_file = "/Users/paepcke/EclipseWorkspacesNew/facebook_ad_classifier/src/classifier/datasets/facebook_ads_clean_train_test_stats.dict"
     #***********
 
 
     BertResultAnalyzer(args.result_file)
+    
+    input("Press ENTER to close the figures and exit...")
+
+         

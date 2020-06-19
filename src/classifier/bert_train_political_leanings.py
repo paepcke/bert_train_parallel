@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 '''
 Created on Jun 8, 2020
 
@@ -102,7 +103,7 @@ class PoliticalLeaningsAnalyst(object):
                  text_col_name='text',
                  label_col_name='label',
                  epochs=4,
-                 batch_size=128,
+                 batch_size=32,
                  sequence_len=128,
                  learning_rate=3e-5,
                  label_encodings=None,
@@ -627,7 +628,7 @@ class PoliticalLeaningsAnalyst(object):
                             'Training Loss': avg_train_loss,
                             'Validation Loss': avg_val_loss,
                             'Training Accuracy': avg_train_accuracy,
-                            'Validation Accuracy.': avg_val_accuracy,
+                            'Validation Accuracy': avg_val_accuracy,
                             'Training Time': training_time,
                             'Validation Time': validation_time
                         }
