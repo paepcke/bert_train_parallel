@@ -8,6 +8,7 @@ Created on Jun 18, 2020
 import argparse
 import os
 import re
+import sqlite3
 import sys
 
 import torch
@@ -15,6 +16,7 @@ import torch
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+from logging_service import LoggingService
 
 
 class BertResultAnalyzer(object):
@@ -31,16 +33,23 @@ class BertResultAnalyzer(object):
         '''
         Constructor
         '''
+        self.log = LoggingService()
+        
         res_files_dict = self.get_result_file_paths(result_file)
-        
-        # Plot train/val losses by epoch:
-        
-        with open(res_files_dict['stats_file'], 'rb') as fd:
-            # Load the data struct into cpu RAM, even
-            # if it was on a GPU when it was saved:
-            train_test_stats = torch.load(fd,
-                                          map_location=torch.device('cpu')
-                                          )
+               
+        try:
+            # Load the train/validate/test stats dict
+            # from the db:
+            stats_file = res_files_dict['stats_file']
+            with open(stats_file, 'rb') as fd:
+                # Load the data struct into cpu RAM, even
+                # if it was on a GPU when it was saved:
+                train_test_stats = torch.load(fd,
+                                              map_location=torch.device('cpu')
+                                              )
+        except FileNotFoundError:
+            self.log.err(f"No train/validate/test stats file found: {stats_file}")
+            
         #****** Temporary Fix *******
         # Early version erroneously produced stats
         # dicts with key "Validation Accuracy" being 
@@ -56,7 +65,52 @@ class BertResultAnalyzer(object):
                 pass
         #****** End Temporary Fix **********
         
+        # Print descriptives:
+        db_file = res_files_dict['db_file']
+        self.get_descriptives(train_test_stats,
+                              db_file
+                              )
+ 
+        # Plot train/val losses by epoch:
         self.plot_train_val_loss_and_accuracy(train_test_stats)
+
+    #------------------------------------
+    # get_descriptives
+    #-------------------
+    
+    def get_descriptives(self, 
+                         train_test_stats, 
+                         sqlite_file_path,
+                         do_print=True):
+
+        if not os.path.exists(sqlite_file_path):
+            self.log.err(f"Sqlite file {sqlite_file_path} does not exist; no descriptives can be retrieved.")
+            return
+        test_res_dict = train_test_stats['Testing']
+        try:
+            db = sqlite3.connect(sqlite_file_path)
+            res = db.execute('''SELECT label, count(*) AS num_this_label 
+                                FROM Samples 
+                               GROUP BY label;
+                            ''')
+            label_count_dict = {}
+            # Build dict: string-label ===> number of samples
+            for (int_label, num_this_label) in res:
+                # Get str label from int label:
+                str_label = next(db.execute(f'''SELECT "{int_label}" from LabelEncodings'''))
+                label_count_dict[str_label] = num_this_label
+        finally:
+            db.close()
+        
+        if do_print:
+            conf_mat = test_res_dict['Confusion matrix']
+            del test_res_dict['Confusion matrix']
+            train_res_df = pd.DataFrame(test_res_dict,
+                                        index=[0])
+            print(train_res_df)
+            print(f"Confusion matrix:\n{conf_mat}")
+
+
 
     #------------------------------------
     # plot_train_val_loss_and_accuracy 
@@ -98,23 +152,22 @@ class BertResultAnalyzer(object):
         #********
         # For testing when only one epoch's results
         # are available: add some more:
-        epoch_stats_dicts.extend(
-            [
-                {'epoch': 2, 'Training Loss': 0.01250069046020508, 'Validation Loss': 0.0623801279067993, 'Training Accuracy': 0.01500625, 'Validation Accuracy.': 0.11, 'Training Time': '0:00:24', 'Validation Time': '0:00:01'},
-                {'epoch': 3, 'Training Loss': 0.00250069046020508, 'Validation Loss': 0.0323801279067993, 'Training Accuracy': 0.02500625, 'Validation Accuracy.': 0.25, 'Training Time': '0:00:24', 'Validation Time': '0:00:01'},
-                {'epoch': 4, 'Training Loss': 0.0004069046020508, 'Validation Loss': 0.0023801279067993, 'Training Accuracy': 0.01500625, 'Validation Accuracy.': 0.35, 'Training Time': '0:00:24', 'Validation Time': '0:00:01'}
-            ]
-            )
-        #********
+#         epoch_stats_dicts.extend(
+#             [
+#                 {'epoch': 2, 'Training Loss': 0.01250069046020508, 'Validation Loss': 0.0623801279067993, 'Training Accuracy': 0.01500625, 'Validation Accuracy.': 0.11, 'Training Time': '0:00:24', 'Validation Time': '0:00:01'},
+#                 {'epoch': 3, 'Training Loss': 0.00250069046020508, 'Validation Loss': 0.0323801279067993, 'Training Accuracy': 0.02500625, 'Validation Accuracy.': 0.25, 'Training Time': '0:00:24', 'Validation Time': '0:00:01'},
+#                 {'epoch': 4, 'Training Loss': 0.0004069046020508, 'Validation Loss': 0.0023801279067993, 'Training Accuracy': 0.01500625, 'Validation Accuracy.': 0.35, 'Training Time': '0:00:24', 'Validation Time': '0:00:01'}
+#             ]
+#             )
+#         #********
 
-        self.plot_stats_dataframe(epoch_stats_dicts, 'loss')
-        self.plot_stats_dataframe(epoch_stats_dicts, 'accuracy')
+        self.plot_stats_dataframe(epoch_stats_dicts)
 
     #------------------------------------
     # def plot_stats_dataframe 
     #-------------------
 
-    def plot_stats_dataframe(self, epoch_stats_dicts, plot_type):
+    def plot_stats_dataframe(self, epoch_stats_dicts):
         '''
         plot_type: 'loss' or 'accuracy'
         
@@ -156,26 +209,33 @@ class BertResultAnalyzer(object):
         
         # Increase the plot size and font size.
         sns.set(font_scale=1.5)
-        plt.rcParams["figure.figsize"] = (12,6)
+        
+        _fig, (ax1, ax2) = plt.subplots(nrows=1, 
+                                        ncols=2, 
+                                        figsize=(12,6),
+                                        tight_layout=True
+                                        )
         
         # Plot the learning curve.
-        if plot_type == 'loss':
-            plt.plot(df_stats['Training Loss'], 'b-o', label="Training")
-            plt.plot(df_stats['Validation Loss'], 'g-o', label="Validation")
-            # Label the plot.
-            plt.title("Training & Validation Loss")
-            plt.ylabel("Loss")
-        elif plot_type == 'accuracy':
-            plt.plot(df_stats['Training Accuracy'], 'b-o', label="Training")
-            plt.plot(df_stats['Validation Accuracy'], 'g-o', label="Validation")
-            # Label the plot.
-            plt.title("Training & Validation Accuracy")
-            plt.ylabel("Accuracy")
 
-        plt.xlabel("Epoch")
-        plt.legend()
-        plt.xticks(df_stats.index.values)
-        #plt.xticks([1, 2, 3, 4])
+        ax1.plot(df_stats['Training Loss'], 'b-o', label="Training")
+        ax1.plot(df_stats['Validation Loss'], 'g-o', label="Validation")
+        # Label the plot.
+        ax1.set_title("Training & Validation Loss")
+        ax1.set_xlabel("Epoch")
+        ax1.set_ylabel("Loss")
+        ax1.set_xticks(df_stats.index.values)
+
+        ax2.plot(df_stats['Training Accuracy'], 'b-o', label="Training")
+        ax2.plot(df_stats['Validation Accuracy'], 'g-o', label="Validation")
+        # Label the plot.
+        ax2.set_title("Training & Validation Accuracy")
+        ax1.set_xlabel("Epoch")
+        ax2.set_ylabel("Accuracy")
+        ax2.set_xticks(df_stats.index.values)
+
+        ax1.legend(frameon=False)
+        ax2.legend(frameon=False)
         
         plt.show(block=False)
 
@@ -190,6 +250,14 @@ class BertResultAnalyzer(object):
            facebook_ads_clean_trained_model.sav
            facebook_ads_clean.sqlite
            facebook_ads_clean.csv
+           
+        Returns:
+                'preds_file' : file_path,
+                'stats_file' : file_path,
+                'model_file' : file_path,
+                'db_file'    : file_path
+                }
+
 
         @param one_result_file:
         @type one_result_file:
@@ -246,76 +314,7 @@ class BertResultAnalyzer(object):
         for p in params[-4:]:
             self.log.info("{:<55} {:>12}".format(p[0], str(tuple(p[1].size()))))
 
-    #------------------------------------
-    # print_test_results 
-    #-------------------
-    
-    def print_test_results(self, training_stats_info=None):
-        
-        if training_stats_info is None:
-            training_stats_info = self.training_stats
-        #self.log.info(self.training_stats)
-        self.plot_train_val_loss_and_accuracy(self.training_stats)
-        return
-        #***********
-#         test_count = 0
-#         unsure_count = 0
-#         count = 0
-#         neutral_count = 0
-#         neutral_test = 0
-#         left_test = 0
-#         left_count = 0
-#         right_test = 0
-#         right_count = 0
-        
-#         for i in range(len(self.dataloader)):
-#             y_label = flat_predictions[i]
-#             category = flat_true_labels[i]
-#             count += 1
-#             if (category == 2):
-#                 neutral_count += 1
-#             if (category == 1):
-#                 left_count += 1
-#             if (category == 0):
-#                 right_count += 1
-#             if (y_label == category):
-#                 test_count += 1
-#                 if (category == 2):
-#                     neutral_count += 1
-#                 if (category == 0):
-#                     right_test += 1
-#                 if (category == 1):
-#                     left_test += 1
-#                 # print("CORRECT!")
-#                 # print(df['message'][i], y_label)
-#                 # print("is : ", category)
-#             else:
-#                 # print("WRONG!")
-#                 # print(df['message'][i], y_label)
-#                 # print("is actually: ", category)
-#                 # print(test_count, "+", unsure_count, "out of", count)
-#                 pass
-#         print("neutral: ", neutral_test, "/", neutral_count)
-#         print("left: ", left_test, "/", left_count)
-#         print("right: ", right_test, "/", right_count)
-#         print(test_count, "+", unsure_count, "out of", count)
-#         
-#         print(accuracy_score(flat_true_labels, flat_predictions))
-#                 
-#         # Format confusion matrix:
-#             
-#         #             right   left    neutral
-#         #     right
-#         #     left
-#         #     neutral
-#         
-#         results = confusion_matrix(flat_true_labels, flat_predictions) 
-#           
-#         print('Confusion Matrix :')
-#         print(results) 
-#         print('Accuracy Score :',accuracy_score(flat_true_labels, flat_predictions))
-#         print('Report : ')
-#         print(classification_report(flat_true_labels, flat_predictions))
+# ------------------- Main ------------------
 
 if __name__ == '__main__':
     
