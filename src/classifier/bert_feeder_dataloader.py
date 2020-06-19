@@ -70,6 +70,63 @@ class BertFeederDataloader(DataLoader):
         self.dataset.reset(split_id)
 
     #------------------------------------
+    # save_dict_to_table 
+    #-------------------
+    
+    def save_dict_to_table(self, table_name, the_dict, delete_existing=False):
+        '''
+        Given a dict, save it to a table in the underlying
+        database. Given that this class is a data*loader*,
+        this method isn't logical to be here. But I don't
+        want to whole new class for this facility.
+        
+        If the table exists, action depends on delete_existing.
+        If True, the table is deleted first. Else the dict values
+        are added as rows. 
+        
+        It is the caller's responsibility to ensure that:
+        
+           - Dict values are db-appropriate data types: int, float, etc.
+           - The table name is a legal Sqlite table name  
+        
+        @param table_name: name of the table
+        @type table_name: str
+        @param dict: col/value information to store
+        @type dict: {str : <any-db-appropriate>}
+        '''
+        col_names = list(the_dict.keys())
+        values    = [the_dict[col_name] for col_name in col_names]
+
+        db = self.dataset.db 
+        if delete_existing:
+            db.execute(f'''DROP TABLE IF EXISTS {table_name}''')
+
+            create_cmd = f"CREATE TABLE {table_name} ('{col_names[0]}' varchar(255)"
+            for col_name in col_names[1:]:
+                create_cmd += f",'{col_name}' varchar(255)"
+            create_cmd += ");"
+            db.execute(create_cmd)
+            db.commit()
+
+        # Create "'val1','val2',..., i.e. the col list of the create statement:
+        val_str = f"'{col_names[0]}'"
+        for val in col_names[1:]:
+            val_str += f",'{val}'"
+        
+        # Create the VALUES list (key1,val1),(key2,val2),...
+        
+        values_list = f"('{values[0]}'"
+        for key in col_names[1:]:
+            values_list += f",'{the_dict[key]}'"
+        values_list += ');'
+
+        # Put it together into an insert statement:            
+        cmd = f'''INSERT INTO {table_name} ({val_str}) VALUES {values_list}'''
+
+        db.execute(cmd)
+        db.commit()
+
+    #------------------------------------
     # __len__ 
     #-------------------
 
