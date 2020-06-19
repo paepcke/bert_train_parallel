@@ -189,10 +189,6 @@ class BertFeederDataset(Dataset):
             self.log.info(f"Using existing db {sqlite_path} (not raw csv)")
             self.db = sqlite3.connect(sqlite_path)
             self.db.row_factory = sqlite3.Row 
-            self.sample_ids = list(self.db.execute('''
-                      SELECT ROWID AS sample_id from Samples
-                      '''
-            ))
 
         else:
             # Fill the sqlite db with records, each
@@ -208,14 +204,12 @@ class BertFeederDataset(Dataset):
         # which will create queues of sample IDs for
         # train/val/test. Till then, the whole dataset is
         # the train queue:
-        try:
-            res = self.db.execute('''
-                   SELECT ROWID AS sample_id 
-                     FROM Samples''')
-        except DatabaseError as e:
-            self.log.err(f"Could not retrieve sample ids from db {sqlite_path}: {repr(e)}")
-            sys.exit(1)
-
+        
+        self.sample_ids = list(self.db.execute('''
+                  SELECT ROWID AS sample_id from Samples
+                  '''
+        ))
+        
         # Make a preliminary train queue with all the
         # sample ids. If split_dataset() is called later,
         # this queue will be replaced:
