@@ -48,7 +48,8 @@ class BertResultAnalyzer(object):
                                               map_location=torch.device('cpu')
                                               )
         except FileNotFoundError:
-            self.log.err(f"No train/validate/test stats file found: {stats_file}")
+            self.log.err(f"No train/validate/test stats file found: {stats_file}; quitting")
+            sys.exit(1)
             
         #****** Temporary Fix *******
         # Early version erroneously produced stats
@@ -89,26 +90,75 @@ class BertResultAnalyzer(object):
         test_res_dict = train_test_stats['Testing']
         try:
             db = sqlite3.connect(sqlite_file_path)
+            
+            # Get overall label distribution:
+            
             res = db.execute('''SELECT label, count(*) AS num_this_label 
                                 FROM Samples 
                                GROUP BY label;
                             ''')
-            label_count_dict = {}
+            label_count_dict_whole_set = {}
             # Build dict: string-label ===> number of samples
             for (int_label, num_this_label) in res:
                 # Get str label from int label:
                 str_label = next(db.execute(f'''SELECT "{int_label}" from LabelEncodings'''))
-                label_count_dict[str_label] = num_this_label
+                label_count_dict_whole_set[str_label] = num_this_label
+                
+            # Get train set label distribution:
+            
+            res = db.execute('''SELECT label, count(*) AS num_this_label 
+                                FROM TrainQueue 
+                               GROUP BY label;
+                            ''')
+            label_count_dict_train = {}
+            # Build dict: string-label ===> number of samples
+            for (int_label, num_this_label) in res:
+                # Get str label from int label:
+                str_label = next(db.execute(f'''SELECT "{int_label}" from LabelEncodings'''))
+                label_count_dict_train[str_label] = num_this_label
+
+
+            # Get validation set label distribution:
+            
+            res = db.execute('''SELECT label, count(*) AS num_this_label 
+                                FROM ValidateQueue 
+                               GROUP BY label;
+                            ''')
+            label_count_dict_validate = {}
+            # Build dict: string-label ===> number of samples
+            for (int_label, num_this_label) in res:
+                # Get str label from int label:
+                str_label = next(db.execute(f'''SELECT "{int_label}" from LabelEncodings'''))
+                label_count_dict_validate[str_label] = num_this_label
         finally:
             db.close()
         
         if do_print:
+            # Separate confusion matrix from the Testing dict.
+            # It's multi-dimensional, and therefore doesn't fit
+            # into a dataframe with the other testing values,
+            # like accuracy:
             conf_mat = test_res_dict['Confusion matrix']
             del test_res_dict['Confusion matrix']
+            
+            # Put the remaining test results into 
+            # a dataframe for easy printing:
             train_res_df = pd.DataFrame(test_res_dict,
                                         index=[0])
+            # Same for label value distributions:
+            samples_label_distrib_df    = pd.DataFrame(label_count_dict_whole_set)
+            train_label_distrib_df      = pd.DataFrame(label_count_dict_train)
+            validate_label_distrib_df   = pd.DataFrame(label_count_dict_validate)
             print(train_res_df)
+            print("Distribution of labels across all samples:")
+            print(samples_label_distrib_df)
+            print("Distribution of labels across training set:")
+            print(train_label_distrib_df)
+            print("Distribution of labels across validation set:")
+            print(validate_label_distrib_df)
+            print()
             print(f"Confusion matrix:\n{conf_mat}")
+            
 
 
 
