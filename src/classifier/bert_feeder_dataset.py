@@ -633,13 +633,13 @@ class BertFeederDataset(Dataset):
         self.db.execute('CREATE TABLE TestQueue (sample_id int)')
         
         # Turn [2,4,6,...] into tuples: [(2,),(4,),(6,),...]
-        train_tuples = [(sample_id,) for sample_id in train_queue]
+        train_tuples = [(int(sample_id),) for sample_id in train_queue]
         self.db.executemany("INSERT INTO TrainQueue VALUES(?);", train_tuples)
 
-        val_tuples = [(sample_id,) for sample_id in val_queue]
+        val_tuples = [(int(sample_id),) for sample_id in val_queue]
         self.db.executemany("INSERT INTO ValidateQueue VALUES(?);", val_tuples)
 
-        test_tuples = [(sample_id,) for sample_id in test_queue]
+        test_tuples = [(int(sample_id),) for sample_id in test_queue]
         self.db.executemany("INSERT INTO TestQueue VALUES(?);", test_tuples)
         
         self.db.commit()
