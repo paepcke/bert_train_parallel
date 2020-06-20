@@ -1002,6 +1002,8 @@ if __name__ == '__main__':
                                   #*********
                                   epochs=1,
                                   #*********
+                                  learning_rate=2e-5,
+                                  batch_size=32,
                                   logfile=args.logfile,
                                   delete_db=args.deletedb
                                   )
