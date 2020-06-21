@@ -5,6 +5,7 @@ Created on Jun 18, 2020
 @author: paepcke
 '''
 
+from _collections import OrderedDict
 import argparse
 import os
 import re
@@ -13,10 +14,11 @@ import sys
 
 import torch
 
+from logging_service import LoggingService
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
-from logging_service import LoggingService
+from sklearn.metrics import classification_report, confusion_matrix
 
 
 class BertResultAnalyzer(object):
@@ -36,7 +38,9 @@ class BertResultAnalyzer(object):
         self.log = LoggingService()
         
         res_files_dict = self.get_result_file_paths(result_file)
-               
+        
+        # Get the stats dict from disk:
+
         try:
             # Load the train/validate/test stats dict
             # from the db:
@@ -50,117 +54,222 @@ class BertResultAnalyzer(object):
         except FileNotFoundError:
             self.log.err(f"No train/validate/test stats file found: {stats_file}; quitting")
             sys.exit(1)
-            
-        #****** Temporary Fix *******
-        # Early version erroneously produced stats
-        # dicts with key "Validation Accuracy" being 
-        # set as "Validation Accuracy." (i.e. stray period)
-        # Fix that here if needed:
-        for epoch_res in train_test_stats['Training']:
-            try:
-                epoch_res['Validation Accuracy.']
-                epoch_res['Validation Accuracy'] = epoch_res['Validation Accuracy.']
-                del epoch_res['Validation Accuracy.']
-            except KeyError:
-                # All OK
-                pass
-        #****** End Temporary Fix **********
+
+        # Get the predictions made for the testset:
         
+        try:
+            # Load the train/validate/test stats dict
+            # from the db:
+            stats_file = res_files_dict['preds_file']
+            self.test_predictions = torch.load(stats_file)
+            
+        except FileNotFoundError:
+            self.log.err(f"No test predictions file found ({res_files_dict['preds_file']})")
+            sys.exit(1)
+
         # Print descriptives:
         db_file = res_files_dict['db_file']
-        self.get_descriptives(train_test_stats,
-                              db_file
-                              )
- 
-        # Plot train/val losses by epoch:
-        self.plot_train_val_loss_and_accuracy(train_test_stats)
+        try:
+            self.db = sqlite3.connect(db_file)
+            # Get ordered dict mapping int labels to
+            # text labels:
+            
+            self.label_encodings = self.get_label_encodings()
+
+            self.get_descriptives(train_test_stats)
+     
+            # Plot train/val losses by epoch:
+            self.plot_train_val_loss_and_accuracy(train_test_stats)
+        finally:
+            self.db.close()
 
     #------------------------------------
     # get_descriptives
     #-------------------
     
-    def get_descriptives(self, 
-                         train_test_stats, 
-                         sqlite_file_path,
-                         do_print=True):
+    def get_descriptives(self, train_test_stats): 
 
-        if not os.path.exists(sqlite_file_path):
-            self.log.err(f"Sqlite file {sqlite_file_path} does not exist; no descriptives can be retrieved.")
-            return
-        test_res_dict = train_test_stats['Testing']
-        try:
-            db = sqlite3.connect(sqlite_file_path)
-            
-            # Get overall label distribution:
-            
-            res = db.execute('''SELECT label, count(*) AS num_this_label 
-                                FROM Samples 
-                               GROUP BY label;
-                            ''')
-            label_count_dict_whole_set = {}
-            # Build dict: string-label ===> number of samples
-            for (int_label, num_this_label) in res:
-                # Get str label from int label:
-                str_label = next(db.execute(f'''SELECT "{int_label}" from LabelEncodings'''))
-                label_count_dict_whole_set[str_label] = num_this_label
-                
-            # Get train set label distribution:
-            
-            res = db.execute('''SELECT label, count(*) AS num_this_label 
-                                FROM TrainQueue 
-                               GROUP BY label;
-                            ''')
-            label_count_dict_train = {}
-            # Build dict: string-label ===> number of samples
-            for (int_label, num_this_label) in res:
-                # Get str label from int label:
-                str_label = next(db.execute(f'''SELECT "{int_label}" from LabelEncodings'''))
-                label_count_dict_train[str_label] = num_this_label
-
-
-            # Get validation set label distribution:
-            
-            res = db.execute('''SELECT label, count(*) AS num_this_label 
-                                FROM ValidateQueue 
-                               GROUP BY label;
-                            ''')
-            label_count_dict_validate = {}
-            # Build dict: string-label ===> number of samples
-            for (int_label, num_this_label) in res:
-                # Get str label from int label:
-                str_label = next(db.execute(f'''SELECT "{int_label}" from LabelEncodings'''))
-                label_count_dict_validate[str_label] = num_this_label
-        finally:
-            db.close()
+        '''
+        Given a dict like the following, which was stored
+        by the training process by the self.db Sqlite db,
+        get more result info from that db, and print result
+        evaluations:
         
-        if do_print:
-            # Separate confusion matrix from the Testing dict.
-            # It's multi-dimensional, and therefore doesn't fit
-            # into a dataframe with the other testing values,
-            # like accuracy:
-            conf_mat = test_res_dict['Confusion matrix']
+            training_stats:
+              'Training' : [{'epoch': 1,
+                             'Training Loss': 0.016758832335472106,
+                             'Validation Loss': 0.102080237865448,
+                             'Training Accuracy': 0.00046875,
+                             'Validation Accuracy.': 0.05,
+                             'Training Time': '0:00:25',
+                             'Validation Time': '0:00:01'},
+                            {'epoch': 2,
+                               ...
+                            }
+                            ]
+            
+              'Testing'  : {'Test Loss': tensor(1.0733),
+                            'Test Accuracy': 0.1,
+                            'Matthews corrcoef': 0.0,
+                            'Confusion matrix': array([[0, 0, 0],
+                                                       [3, 1, 6],
+                                                       [0, 0, 0]])
+                           }
+        
+        
+        @param train_test_stats: dict of test and training results
+        @type train_test_stats: dict
+        '''
+
+        # Convenience: pull out the Testing sub-dir:
+        test_res_dict = train_test_stats['Testing']
+        #**************
+        # Temporary fix: remove confusion matrix added
+        # to the test_res_dict by older version of 
+        # bert_train_political_leanings.py
+        try:
             del test_res_dict['Confusion matrix']
-            
-            # Put the remaining test results into 
-            # a dataframe for easy printing:
-            train_res_df = pd.DataFrame(test_res_dict,
-                                        index=[0])
-            # Same for label value distributions:
-            samples_label_distrib_df    = pd.DataFrame(label_count_dict_whole_set)
-            train_label_distrib_df      = pd.DataFrame(label_count_dict_train)
-            validate_label_distrib_df   = pd.DataFrame(label_count_dict_validate)
-            print(train_res_df)
-            print("Distribution of labels across all samples:")
-            print(samples_label_distrib_df)
-            print("Distribution of labels across training set:")
-            print(train_label_distrib_df)
-            print("Distribution of labels across validation set:")
-            print(validate_label_distrib_df)
-            print()
-            print(f"Confusion matrix:\n{conf_mat}")
-            
+        except:
+            # Wasn't there: dict was created by new version:
+            pass
+        #**************
 
+        # Get distribution of labels across the entire dataset,
+        # and the train, validation, and test sets:
+        
+         
+        # Get overall label distribution:
+        
+        res = self.db.execute('''SELECT label, count(*) AS num_this_label 
+                            FROM Samples 
+                           GROUP BY label;
+                        ''')
+        label_count_dict_whole_set = {}
+        # Build dict: string-label ===> number of samples
+        for (int_label, num_this_label) in res:
+            # Get str label from int label:
+            str_label = self.label_encodings[str(int_label)]
+            label_count_dict_whole_set[str_label] = num_this_label
+            
+        # Get train set label distribution:
+        
+        res = self.db.execute('''SELECT label, count(*) as label_count
+                              FROM TrainQueue LEFT JOIN Samples
+                               ON sample_id = Samples.ROWID
+                             GROUP BY label;
+                        ''')
+        label_count_dict_train = {}
+        # Build dict: string-label ===> number of samples
+        for (int_label, num_this_label) in res:
+            # Get str label from int label:
+            str_label = self.label_encodings[str(int_label)]
+            label_count_dict_train[str_label] = num_this_label
 
+        # Get validation set label distribution:
+
+        res = self.db.execute('''SELECT label, count(*) as label_count
+                              FROM ValidateQueue LEFT JOIN Samples
+                               ON sample_id = Samples.ROWID
+                             GROUP BY label;
+                        ''')
+        
+        label_count_dict_validate = {}
+        # Build dict: string-label ===> number of samples
+        for (int_label, num_this_label) in res:
+            # Get str label from int label:
+            str_label = self.label_encodings[str(int_label)]
+            label_count_dict_validate[str_label] = num_this_label
+
+        # Get test set label distribution:
+        
+        res = self.db.execute('''SELECT label, count(*) as label_count
+                              FROM TestQueue LEFT JOIN Samples
+                               ON sample_id = Samples.ROWID
+                             GROUP BY label;
+                        ''')
+        
+        label_count_dict_test = {}
+        # Build dict: string-label ===> number of samples
+        for (int_label, num_this_label) in res:
+            # Get str label from int label:
+            str_label = self.label_encodings[str(int_label)]
+            label_count_dict_test[str_label] = num_this_label
+
+        
+        # Get the ordered sample ids that were used
+        # for testing, as well as their true labels.
+
+        true_label_cur = self.db.execute(
+                            '''SELECT label AS true_test_label
+                                 FROM TestQueue LEFT JOIN Samples
+                                   ON TestQueue.sample_id = Samples.ROWID
+                                ORDER BY Samples.ROWID;
+                            ''')
+        # Get a list of int-label tuples: [(1,),(3,)...]
+        true_labels = true_label_cur.fetchall()
+        true_labels = [true_label[0] for true_label in true_labels]
+        
+        # Put the remaining test results into 
+        # a dataframe for easy printing:
+        train_res_df = pd.DataFrame(test_res_dict,
+                                    index=[0])
+        # Same for label value distributions:
+        samples_label_distrib_df    = pd.DataFrame(label_count_dict_whole_set,
+                                                   index=[0]
+                                                   )
+        train_label_distrib_df      = pd.DataFrame(label_count_dict_train,
+                                                   index=[0]
+                                                   )
+        validate_label_distrib_df   = pd.DataFrame(label_count_dict_validate,
+                                                   index=[0]
+                                                   )
+        
+        test_label_distrib_df   = pd.DataFrame(label_count_dict_test,
+                                               index=[0]
+                                               )
+        
+        # Turn confusion matrix numpy into a df
+        # with string labels to mark rows and columns:
+        conf_mat_df = pd.DataFrame(confusion_matrix(true_labels,
+                                                    self.test_predictions
+                                                    ),
+                                   index=self.label_encodings.values(),
+                                   columns=self.label_encodings.values()
+                                   )
+        # We also produce a conf matrix normalized to 
+        # the true values. So each cell is percentage 
+        # predicted/true:
+        conf_mat_norm_df = pd.DataFrame(confusion_matrix(true_labels,
+                                                         self.test_predictions,
+                                                         normalize='true'
+                                                         ),
+                                                         index=self.label_encodings.values(),
+                                                         columns=self.label_encodings.values(),
+                                        )
+        # Change entries to be 'x.yy%'
+        conf_mat_norm_df = conf_mat_norm_df.applymap(lambda df_el: f"{round(df_el,2)}%")
+        
+        print(train_res_df.to_string(index=False, justify='center'))
+        print()
+        # Label distributions in the sample subsets:
+        print("Distribution of labels across all samples:")
+        print(samples_label_distrib_df.to_string(index=False, justify='center'))
+        print("Distribution of labels across training set:")
+        print(train_label_distrib_df.to_string(index=False, justify='center'))
+        print("Distribution of labels across validation set:")
+        print(validate_label_distrib_df.to_string(index=False, justify='center'))
+        print("Distribution of labels across test set:")
+        print(test_label_distrib_df.to_string(index=False, justify='center'))
+        print()
+        print(f"Confusion matrix (rows: true; cols: predicted):")
+        print(f"{conf_mat_df}")
+        print("")
+        print(f"Confusion matrix normalized: percent of true (rows: true; cols: predicted):")
+        print(conf_mat_norm_df)
+        print("")
+        result_report = classification_report(true_labels,
+                                              self.test_predictions)
+        print(result_report)
 
     #------------------------------------
     # plot_train_val_loss_and_accuracy 
@@ -280,13 +389,14 @@ class BertResultAnalyzer(object):
         ax2.plot(df_stats['Validation Accuracy'], 'g-o', label="Validation")
         # Label the plot.
         ax2.set_title("Training & Validation Accuracy")
-        ax1.set_xlabel("Epoch")
+        ax2.set_xlabel("Epoch")
         ax2.set_ylabel("Accuracy")
         ax2.set_xticks(df_stats.index.values)
 
         ax1.legend(frameon=False)
         ax2.legend(frameon=False)
         
+        plt.ion()
         plt.show(block=False)
 
     #------------------------------------
@@ -335,7 +445,31 @@ class BertResultAnalyzer(object):
                 'model_file' : files_root + model_str,
                 'db_file'    : files_root + db_str
                 }
-        
+
+    #------------------------------------
+    # get_label_encodings 
+    #-------------------
+    
+    def get_label_encodings(self):
+        '''
+        Get contents of the LabelEncodings table
+        into the dict label_encodings. These are
+        the mappings from the bert integer encodings
+        of labels (0,1,2,3) to the human readable labels
+        ('foo', 'bar', 'fum', 'blue') 
+        '''
+        label_encodings = OrderedDict()
+        try:
+            cur = self.db.execute(f'''SELECT key_col, val_col 
+                                        FROM LabelEncodings''')
+            while True:
+                (int_label, str_label) = next(cur)
+                label_encodings[int_label] = str_label
+        except StopIteration:
+            return label_encodings
+                             
+
+
     #------------------------------------
     # print_model_parms 
     #-------------------
