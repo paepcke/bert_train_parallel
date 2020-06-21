@@ -247,7 +247,8 @@ class BertResultAnalyzer(object):
                                                          columns=self.label_encodings.values(),
                                         )
         # Change entries to be 'x.yy%'
-        conf_mat_norm_df = conf_mat_norm_df.applymap(lambda df_el: f"{round(df_el,2)}%")
+        #conf_mat_norm_df = conf_mat_norm_df.applymap(lambda df_el: f"{round(df_el,2)}%")
+        conf_mat_norm_df = conf_mat_norm_df.applymap(lambda df_el: f"{100*round(df_el,1)}%")
         
         print(train_res_df.to_string(index=False, justify='center'))
         print()
