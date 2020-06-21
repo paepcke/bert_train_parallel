@@ -24,7 +24,6 @@ from torch import nn, cuda
 import torch
 from transformers import AdamW, BertForSequenceClassification
 from transformers import get_linear_schedule_with_warmup
-from rsa.common import inverse
 
 sys.path.append(os.path.dirname(__file__))
 
@@ -716,16 +715,16 @@ class PoliticalLeaningsAnalyst(object):
         
         self.log.info('    DONE applying model to test set.')
         # Ordered list of label ints:
-        matrix_labels = list(self.label_encodings.values())
+        #matrix_labels = list(self.label_encodings.values())
         self.training_stats['Testing'] = \
                 {
                     'Test Loss': loss,
                     'Test Accuracy': self.accuracy(all_predictions, all_labels),
                     'Matthews corrcoef': self.matthews_corrcoef(all_predictions, all_labels),
-                    'Confusion matrix' : self.confusion_matrix(all_predictions, 
-                                                               all_labels, 
-                                                               matrix_labels=matrix_labels
-                                                               )}
+                    #'Confusion matrix' : self.confusion_matrix(all_predictions, 
+                    #                                           all_labels, 
+                    #                                           matrix_labels=matrix_labels
+                    #                                           )}
 
         if self.gpu_device != 'cpu':
             del loss
