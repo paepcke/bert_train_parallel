@@ -720,11 +720,12 @@ class PoliticalLeaningsAnalyst(object):
                 {
                     'Test Loss': loss,
                     'Test Accuracy': self.accuracy(all_predictions, all_labels),
-                    'Matthews corrcoef': self.matthews_corrcoef(all_predictions, all_labels),
+                    'Matthews corrcoef': self.matthews_corrcoef(all_predictions, all_labels)
                     #'Confusion matrix' : self.confusion_matrix(all_predictions, 
                     #                                           all_labels, 
                     #                                           matrix_labels=matrix_labels
                     #                                           )}
+                }
 
         if self.gpu_device != 'cpu':
             del loss
