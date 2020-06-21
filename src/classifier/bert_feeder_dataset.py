@@ -168,6 +168,7 @@ class BertFeederDataset(Dataset):
             sqlite_path = file_path + '.sqlite'
 
         db_exists = os.path.exists(sqlite_path)
+        # Ask user about fate of the existing sqlite db? 
         if not quiet: 
             if db_exists:
                 if delete_db is None:
@@ -185,31 +186,26 @@ class BertFeederDataset(Dataset):
             # db if it exists:
             use_db = True 
             
+        # Check that we didn't delete the db in the above:
         if os.path.exists(sqlite_path) and use_db:
             self.log.info(f"Using existing db {sqlite_path} (not raw csv)")
             self.db = sqlite3.connect(sqlite_path)
-            self.db.row_factory = sqlite3.Row 
-
+            self.db.row_factory = sqlite3.Row
         else:
             # Fill the sqlite db with records, each
             # containing sample_id, toc_ids, label, attention_mask.
-            # Also sets self.samples_ids
             self.db = self.process_csv_file(csv_path,
                                             sqlite_path, 
                                             sequence_len,
                                             text_col_name,
                                             label_col_name
                                             )
-        # Usually, caller will next call split_dataset(),
-        # which will create queues of sample IDs for
-        # train/val/test. Till then, the whole dataset is
-        # the train queue:
-        
-        self.sample_ids = list(self.db.execute('''
-                  SELECT ROWID AS sample_id from Samples
-                  '''
-        ))
-        
+
+        num_samples_row = next(self.db.execute('''SELECT COUNT(*) AS num_samples from Samples'''))
+        # Sqlite3 ROWIDs go from 1 to n
+        self.sample_ids = list(range(1,
+                                     num_samples_row['num_samples'] + 1))
+
         # Make a preliminary train queue with all the
         # sample ids. If split_dataset() is called later,
         # this queue will be replaced:
@@ -308,6 +304,8 @@ class BertFeederDataset(Dataset):
         @type text_col_name:
         @param label_col_name:
         @type label_col_name:
+        @return: a database (connection) instance
+        @rtype: sqlite3.Connection
         '''
         
         # Set defaults where needed:
@@ -387,10 +385,7 @@ class BertFeederDataset(Dataset):
                     self.log.info(f"Processed {num_processed}/{num_csv_lines} CSV records")
         finally:
             csv_fd.close()
-            self.sample_ids = list(db.execute('''
-                                              SELECT ROWID AS sample_id from Samples
-                                              '''
-                                              ))
+
         return db
     
     #------------------------------------
@@ -596,7 +591,6 @@ class BertFeederDataset(Dataset):
         perm = np.random.permutation(sample_indices)
         # Permutations returns a list of arrays:
         #   [[12],[40],...]; turn into simple list of ints:
-        perm = [sample_idx_arr[0] for sample_idx_arr in perm]
         num_samples = len(perm)
         
         train_end = int(train_percent * num_samples)
