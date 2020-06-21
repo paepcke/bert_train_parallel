@@ -94,36 +94,15 @@ class BertFeederDataloader(DataLoader):
         @param dict: col/value information to store
         @type dict: {str : <any-db-appropriate>}
         '''
-        col_names = list(the_dict.keys())
-        values    = [the_dict[col_name] for col_name in col_names]
-
         db = self.dataset.db 
         if delete_existing:
             db.execute(f'''DROP TABLE IF EXISTS {table_name}''')
-
-            create_cmd = f"CREATE TABLE {table_name} ('{col_names[0]}' varchar(255)"
-            for col_name in col_names[1:]:
-                create_cmd += f",'{col_name}' varchar(255)"
-            create_cmd += ");"
-            db.execute(create_cmd)
+            db.execute(f'''CREATE TABLE {table_name} ('key_col' varchar(255),
+                                                      'val_col' varchar(255));''')
             db.commit()
 
-        # Create "'val1','val2',..., i.e. the col list of the create statement:
-        val_str = f"'{col_names[0]}'"
-        for val in col_names[1:]:
-            val_str += f",'{val}'"
-        
-        # Create the VALUES list (key1,val1),(key2,val2),...
-        
-        values_list = f"('{values[0]}'"
-        for key in col_names[1:]:
-            values_list += f",'{the_dict[key]}'"
-        values_list += ');'
-
-        # Put it together into an insert statement:            
-        cmd = f'''INSERT INTO {table_name} ({val_str}) VALUES {values_list}'''
-
-        db.execute(cmd)
+        insert_vals = list(the_dict.items())
+        db.executemany(f"INSERT INTO {table_name} VALUES(?,?);", insert_vals)
         db.commit()
 
     #------------------------------------
