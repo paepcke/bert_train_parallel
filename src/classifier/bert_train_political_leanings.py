@@ -577,7 +577,7 @@ class PoliticalLeaningsAnalyst(object):
                     avg_train_accuracy = total_train_accuracy / len(self.dataloader)
 
             except Exception as e:
-                msg = f"During train/validate: {repr(e)}\n"
+                msg = f"During train: {repr(e)}\n"
                     
                 if self.gpu_device != 'cpu':
                     self.log.err(f"GPU memory used at crash time: {self.gpu_obj.memoryUsed}")
@@ -586,7 +586,7 @@ class PoliticalLeaningsAnalyst(object):
                         for event_info in chckpt_dict.keys():
                             msg += f"    {event_info}:      {chckpt_dict[event_info]}\n"
     
-                raise TrainError(msg)
+                raise TrainError(msg).with_traceback(e.__traceback__)
                     
             return(avg_train_loss, avg_train_accuracy)
 
@@ -675,7 +675,7 @@ class PoliticalLeaningsAnalyst(object):
             self.log.info(f"  Validation took: {validation_time}")
         
         except Exception as e:
-            msg = f"During train/validate: {repr(e)}\n"
+            msg = f"During validate: {repr(e)}\n"
 
             if self.gpu_device != 'cpu':
                 self.log.err(f"GPU memory used at crash time: {self.gpu_obj.memoryUsed}")
@@ -684,7 +684,7 @@ class PoliticalLeaningsAnalyst(object):
                     for event_info in chckpt_dict.keys():
                         msg += f"    {event_info}:      {chckpt_dict[event_info]}\n"
 
-            raise TrainError(msg)
+            raise TrainError(msg).with_traceback(e.__traceback__)
             
         return(avg_val_loss, avg_val_accuracy)
     #------------------------------------
