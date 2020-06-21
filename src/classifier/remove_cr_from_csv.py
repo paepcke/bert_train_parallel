@@ -20,8 +20,11 @@ class NewlineRemover(object):
         '''
         Constructor
         '''
-        # A real line starts with a large int:
-        true_line_start_pat = re.compile(r'^[\d]{5,}$')
+        # A real line starts with a large int;
+        # Each line will be in an array by column,
+        # So the pattern expect *only* an int, therefore
+        # the dollar sign:
+        true_line_start_pat = re.compile(r'^[\d]+$')
         crlf_pat = re.compile(r'[\n\r]')
         
         with open(csv_path, 'r') as fd:
@@ -34,11 +37,20 @@ class NewlineRemover(object):
             
             line_accumulator = []
             for line in reader:
+                #*************
+                #print(f"Line: {line}")
+                #*************
                 # Line is an array of words. Replace nls:
                 if true_line_start_pat.search(line[0]) is not None:
                     # Likely found true new CSV line
+                    #**********
+                    #print(f"IS match: {line[0]}")
+                    #**********
                     is_line_start = True
                 else:
+                    #**********
+                    #print(f"NOT match: {line[0]}")
+                    #**********
                     is_line_start = False
                     
                 # Remove any embedded \n or \r:
@@ -59,9 +71,10 @@ if __name__ == '__main__':
     
     #********
     #sys.argv = ['remove_cr_from_csv.py', '/Users/paepcke/EclipseWorkspacesNew/facebook_ad_classifier/src/classifier/datasets/facebook_ads.csv']
+    #print(f"******sys.argv: {sys.argv}")
     #********
     if len(sys.argv) != 2 or sys.argv[1] == '-h' or sys.argv[1] == '--help':
-        print("Usage: remove_cr_from_csv.py <path_to_csv_file")
+        print("Usage (outputs to stdout): remove_cr_from_csv.py <path_to_csv_file>")
         sys.exit(1)
     csv_path = sys.argv[1]
     if not os.path.exists(csv_path):
