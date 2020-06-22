@@ -8,7 +8,6 @@ import os
 import re
 import sys
 
-from keras.preprocessing.sequence import pad_sequences
 from pytorch_pretrained_bert import BertTokenizer
 
 import pandas as pd
@@ -230,15 +229,38 @@ class TextAugmenter(object):
 #         ids = [self.tokenizer.convert_tokens_to_ids(tok_seq) \
 #                for tok_seq in token_seqs]
         ids = self.tokenizer.convert_tokens_to_ids(token_seq)
-        padded_ids = pad_sequences([ids], 
-                                   maxlen=self.sequence_len, 
-                                   dtype="long", 
-                                   truncating="post", # Should be truncating 
-                                   padding="post")  , # If padding needed: at the end
+        padded_ids = self.pad_sequences([ids],
+                                        self.sequence_len,
+                                        0
+                                        ) 
 
         # Padded_ids is a 1-tuple. Inside is 
         # a numpy array.
-        return padded_ids[0].flatten()
+        return padded_ids[0]
+
+    #------------------------------------
+    # pad_sequences 
+    #-------------------
+    
+    def pad_sequences(self,
+                      arrays,
+                      targetlen,
+                      fill_constant
+                      ):
+        new_arr = []
+        for arr in arrays:
+            arr_len = len(arr)
+            if arr_len == targetlen:
+                new_arr.append(arr)
+                continue
+            if arr_len > targetlen:
+                new_arr.append(arr[:targetlen])
+                continue
+            # Sequence too short:
+            filler = [fill_constant]*(targetlen - arr_len)
+            arr.extend(filler)
+            new_arr.append(arr)
+        return new_arr
 
     #------------------------------------
     # get_indexes 
