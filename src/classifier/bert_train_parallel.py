@@ -13,9 +13,8 @@ import random
 import time
 
 import GPUtil
-# Mixed floating point facility (Automatic Mixed Precision)
-# From Nvidia: https://nvidia.github.io/apex/amp.html
 from apex import amp
+from apex.parallel import DistributedDataParallel
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import classification_report 
 from sklearn.metrics import confusion_matrix 
@@ -25,14 +24,23 @@ import torch
 from transformers import AdamW, BertForSequenceClassification
 from transformers import get_linear_schedule_with_warmup
 
-sys.path.append(os.path.dirname(__file__))
-
 from bert_feeder_dataloader import BertFeederDataloader
 from bert_feeder_dataloader import set_split_id
 from bert_feeder_dataset import BertFeederDataset
 from logging_service import LoggingService
-
 import numpy as np
+from src.classifier.bert_feeder_dataloader import MultiprocessingDataloader
+import torch.distributed as dist
+import torch.multiprocessing as mp
+
+
+# Mixed floating point facility (Automatic Mixed Precision)
+# From Nvidia: https://nvidia.github.io/apex/amp.html
+sys.path.append(os.path.dirname(__file__))
+
+
+
+# For parallelism:
 
 # ------------------------ Specialty Exceptions --------
 
@@ -93,6 +101,10 @@ class BertTrainer(object):
      
     AMP_OPTIMIZATION_LEVEL = "O1"
     
+    # Device number for CPU (as opposed to GPUs, which 
+    # are numbered as positive ints:
+    CPU_DEV = -1
+    
     #------------------------------------
     # Constructor 
     #-------------------
@@ -134,6 +146,8 @@ class BertTrainer(object):
         # on the GPU status along the way:
         
         self.gpu_device = self.enable_GPU()
+        if self.gpu_device != self.CPU_DEV:
+            self.init_multiprocessing(self.gpu_device)
 
         if model_save_path is None:
             (csv_file_root, _ext) = os.path.splitext(csv_path)
@@ -146,10 +160,13 @@ class BertTrainer(object):
                                     sequence_len=sequence_len,
                                     delete_db=delete_db
                                     )
-                #sampler = SequentialSampler(dataset)
-        dataloader = BertFeederDataloader(dataset, 
-                                #sampler=sampler, 
-                                batch_size=self.batch_size)
+        if self.gpu_device == self.CPU_DEV:
+            dataloader = BertFeederDataloader(dataset, 
+                                              batch_size=self.batch_size)
+            
+        else:
+            dataloader = MultiprocessingDataloader(dataset, 
+                                                   batch_size=self.batch_size)
 
         # Save the label_encodings dict in a db table,
         # but reversed: int-code ==> label-str
@@ -173,6 +190,12 @@ class BertTrainer(object):
         dataset.switch_to_split('train')
         (self.model, self.optimizer, self.scheduler) = self.prepare_model(dataloader,
                                                                           learning_rate)
+        #******* If works, delete this:
+#         # Make the model multiprocessing-aware:
+#         self.model = DistributedDataParallel(self.model,
+#                                              device_ids=[self.gpu_device])
+        #*******
+        
         self.train(epochs)
         
         # TESTING:
@@ -210,10 +233,45 @@ class BertTrainer(object):
 #       validation set back into the train set, and retrain. 
 
     #------------------------------------
+    # init_multiprocessing 
+    #-------------------
+    
+    def init_multiprocessing(self, gpu):
+        self.rank = BertTrainer.node_rank * BertTrainer.gpus + gpu
+        os.environ['RANK'] = str(self.rank)
+        os.environ['WORLD_SIZE'] = str(self.world_size)
+        dist.init_process_group(                                   
+            backend='nccl',                                         
+            init_method='env://',                                   
+            #world_size=BertTrainer.world_size,
+            #rank=self.rank
+        )           
+
+
+    #------------------------------------
     # enable_GPU 
     #-------------------
 
     def enable_GPU(self, raise_gpu_unavailable=True):
+        '''
+        Returns the device id (an int) of an 
+        available GPU. If none is exists on this 
+        machine, returns self.CPU_DEV (-1).
+        
+        Initializes self.gpu_obj, which is a CUDA
+        GPU instance. 
+        
+        Initializes self.cuda_dev: f"cuda:{device_id}"
+        
+        
+        @param raise_gpu_unavailable: whether to raise error
+            when GPUs exist on this machine, but none are available.
+        @type raise_gpu_unavailable: bool
+        @return: a GPU device ID, or self.CPU_DEV
+        @rtype: int
+        @raise NoGPUAvailable: if exception requested via 
+            raise_gpu_unavailable, and no GPU is available.
+        '''
 
         self.gpu_obj = None
 
@@ -221,11 +279,11 @@ class BertTrainer(object):
         # Could be (GPU available):
         #   device(type='cuda', index=0)
         # or (No GPU available):
-        #   device(type='cpu')
+        #   device(type=self.CPU_DEV)
 
         gpu_objs = GPUtil.getGPUs()
         if len(gpu_objs) == 0:
-            return 'cpu'
+            return self.CPU_DEV
 
         # GPUs are installed, are any available, given
         # their current memory/cpu usage? We use the 
@@ -245,7 +303,7 @@ class BertTrainer(object):
                 raise NoGPUAvailable("Even though GPUs are installed, all are already in use.")
             else:
                 # Else quietly revert to CPU
-                return 'cpu'
+                return self.CPU_DEV
         
         # Get the GPU object that has the found
         # deviceID:
@@ -301,7 +359,7 @@ class BertTrainer(object):
         )
         
         # Tell pytorch to run this model on the GPU.
-        if self.gpu_device != 'cpu':
+        if self.gpu_device != self.CPU_DEV:
             model = model.to(device=self.cuda_dev)
         # Note: AdamW is a class from the huggingface library (as opposed to pytorch) 
         # I believe the 'W' stands for 'Weight Decay fix"
@@ -311,13 +369,13 @@ class BertTrainer(object):
                                eps = 1e-8 # args.adam_epsilon  - default is 1e-8.
                                )
 
-        if self.gpu_device != 'cpu':
+        if self.gpu_device != self.CPU_DEV:
             # Allow Amp to perform casts as required by the opt_level
             # Second AMP related change:
             (model, optimizer) = amp.initialize(model, 
                                                 optimizer, 
                                                 opt_level=self.AMP_OPTIMIZATION_LEVEL)
-        
+            model = DistributedDataParallel(model)
         # Total number of training steps is [number of batches] x [number of epochs]. 
         # (Note that this is not the same as the number of training samples).
         total_steps = len(train_dataloader) * self.epochs
@@ -484,7 +542,7 @@ class BertTrainer(object):
                     #   [0]: input ids 
                     #   [1]: attention masks
                     #   [2]: labels
-                    if self.gpu_device == 'cpu':
+                    if self.gpu_device == self.CPU_DEV:
                         b_input_ids = batch['tok_ids']
                         b_input_mask = batch['attention_mask']
                         b_labels = batch['label']
@@ -500,7 +558,7 @@ class BertTrainer(object):
                     self.model.zero_grad()        
             
                     # Note GPU usage:
-                    if self.gpu_device != 'cpu':
+                    if self.gpu_device != self.CPU_DEV:
                         self.history_checkpoint(epoch_i, sample_counter,'pre_model_call')
                         
                     # Perform a forward pass (evaluate the model on this training batch).
@@ -515,10 +573,10 @@ class BertTrainer(object):
                                                     attention_mask=b_input_mask, 
                                                     labels=b_labels)
                     
-                    if self.gpu_device != 'cpu':
-                        b_input_ids = b_input_ids.to('cpu')
-                        logits = logits.to('cpu')
-                        b_labels = b_labels.to('cpu')
+                    if self.gpu_device != self.CPU_DEV:
+                        b_input_ids = b_input_ids.to(self.CPU_DEV)
+                        logits = logits.to(self.CPU_DEV)
+                        b_labels = b_labels.to(self.CPU_DEV)
                         del b_input_mask
                         cuda.empty_cache()                    
     
@@ -526,7 +584,7 @@ class BertTrainer(object):
                     total_train_accuracy += train_acc
     
                     # Note GPU usage:
-                    if self.gpu_device != 'cpu':
+                    if self.gpu_device != self.CPU_DEV:
                         self.history_checkpoint(epoch_i, sample_counter,'post_model_call')
     
                     # Accumulate the training train_loss over all of the batches so that we can
@@ -536,7 +594,7 @@ class BertTrainer(object):
                     total_train_loss += train_loss.item()
             
                     # Perform a backward pass to calculate the gradients.
-                    if self.gpu_device != 'cpu':
+                    if self.gpu_device != self.CPU_DEV:
                         # Third AMP related change:
                         with amp.scale_loss(train_loss, self.optimizer) as scaled_loss:
                             scaled_loss.backward()
@@ -548,7 +606,7 @@ class BertTrainer(object):
                     # From torch:
                     nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             
-                    if self.gpu_device != 'cpu':
+                    if self.gpu_device != self.CPU_DEV:
                         del b_input_ids
                         del b_labels
                         del train_loss
@@ -564,7 +622,7 @@ class BertTrainer(object):
                     self.optimizer.step()
                     
                     # Note GPU usage:
-                    if self.gpu_device != 'cpu':
+                    if self.gpu_device != self.CPU_DEV:
                         cuda.empty_cache()
                         self.history_checkpoint(epoch_i, sample_counter,'post_optimizer')
                         
@@ -579,7 +637,7 @@ class BertTrainer(object):
             except Exception as e:
                 msg = f"During train: {repr(e)}\n"
                     
-                if self.gpu_device != 'cpu':
+                if self.gpu_device != self.CPU_DEV:
                     self.log.err(f"GPU memory used at crash time: {self.gpu_obj.memoryUsed}")
                     msg += "GPU use history:\n"
                     for chckpt_dict in self.gpu_status_history:
@@ -626,7 +684,7 @@ class BertTrainer(object):
                 #   [0]: input ids 
                 #   [1]: attention masks
                 #   [2]: labels
-                if self.gpu_device == 'cpu':
+                if self.gpu_device == self.CPU_DEV:
                     b_input_ids = batch['tok_ids']
                     b_input_mask = batch['attention_mask']
                     b_labels = batch['label']
@@ -654,7 +712,7 @@ class BertTrainer(object):
                 total_val_loss += val_loss.item()
                 total_val_accuracy += self.accuracy(logits, b_labels)
 
-                if self.gpu_device != 'cpu':
+                if self.gpu_device != self.CPU_DEV:
                     del b_input_ids
                     del b_input_mask
                     del b_labels
@@ -677,7 +735,7 @@ class BertTrainer(object):
         except Exception as e:
             msg = f"During validate: {repr(e)}\n"
 
-            if self.gpu_device != 'cpu':
+            if self.gpu_device != self.CPU_DEV:
                 self.log.err(f"GPU memory used at crash time: {self.gpu_obj.memoryUsed}")
                 msg += "GPU use history:\n"
                 for chckpt_dict in self.gpu_status_history:
@@ -706,7 +764,7 @@ class BertTrainer(object):
         # Batches come as dicts with keys
         # sample_id, tok_ids, label, attention_mask: 
         for batch in self.dataloader:
-            if self.gpu_device == 'cpu':
+            if self.gpu_device == self.CPU_DEV:
                 b_input_ids = batch['tok_ids']
                 b_input_mask = batch['attention_mask']
                 b_labels = batch['label']
@@ -725,9 +783,9 @@ class BertTrainer(object):
                     
             # Move logits and labels to CPU, if the
             # are not already:
-            if self.gpu_device != 'cpu':
-                logits = logits.to('cpu')
-                b_labels = b_labels.to('cpu')
+            if self.gpu_device != self.CPU_DEV:
+                logits = logits.to(self.CPU_DEV)
+                b_labels = b_labels.to(self.CPU_DEV)
                 cuda.empty_cache()
 
             # Get the class prediction from the 
@@ -752,7 +810,7 @@ class BertTrainer(object):
                     #                                           )}
                 }
 
-        if self.gpu_device != 'cpu':
+        if self.gpu_device != self.CPU_DEV:
             del loss
             cuda.empty_cache()
 
@@ -983,6 +1041,39 @@ class BertTrainer(object):
              'GPU_memory_used': self.gpu_obj.memoryUsed
              }
             )
+        
+    #------------------------------------
+    # launch_trainer 
+    #-------------------
+    
+    @classmethod
+    def launch_trainer(cls, process_indx, argparse_args):
+        
+        # argparse_args is named for clarity. For
+        # brevity:
+        args = argparse_args
+        # Total number of GPUs (to use) on this node:
+        BertTrainer.gpus = args.gpus
+        # Total number of GPUs on all machines (nodes): 
+        BertTrainer.world_size = args.world_size
+        
+        # Rank of this node among all the nodes 
+        # that will be involved in the computations:
+        BertTrainer.node_rank = args.nr
+        
+        _pa = BertTrainer(args.csv_path,
+                         text_col_name=args.text,
+                         label_col_name=args.labels,
+                         #*********
+                         epochs=1,
+                         #*********
+                         learning_rate=2e-5,
+                         batch_size=32,
+                         logfile=args.logfile,
+                         delete_db=args.deletedb
+                         )
+
+
 # -------------------- Main ----------------
 if __name__ == '__main__':
 
@@ -993,7 +1084,7 @@ if __name__ == '__main__':
                                      description="BERT-train from CSV, or run saved model."
                                      )
 
-    parser.add_argument('-g', '--logfile',
+    parser.add_argument('-f', '--logfile',
                         help="path to log file; if 'stdout' direct to display;\n" +\
                              'Default: facebook_ads.log in script file.',
                         default=None);
@@ -1012,6 +1103,14 @@ if __name__ == '__main__':
                         action='store_true',
                         default=False
                         )
+    # Parallelism:
+    parser.add_argument('-n', '--nodes', default=1,
+                        type=int, metavar='N')
+    parser.add_argument('-g', '--gpus', default=1, type=int,
+                        help='number of gpus per node')
+    parser.add_argument('-nr', '--nr', default=0, type=int,
+                        help='ranking within the nodes')    
+
     parser.add_argument('csv_path',
                         help='path to csv file to process')
 
@@ -1021,18 +1120,29 @@ if __name__ == '__main__':
     #args.csv_path = os.path.join(data_dir, "facebook_ads_clean.csv")
     #args.text = 'text'
     #args.labels = 'leaning'
-    args.deletedb=False
+    #args.deletedb=False
     #**********
+    if len(GPUtil.getGPUs()) > 0:
+        args.world_size = args.gpus * args.nodes                #
+        os.environ['MASTER_ADDR'] = '172.24.75.114'             #
+        os.environ['MASTER_PORT'] = '7777'                      #
+        mp.spawn(BertTrainer.launch_trainer, 
+                 nprocs=args.gpus, 
+                 args=(args,))
+    else:
+        #**********
+        args.deletedb = True
+        #**********
+        _pa = BertTrainer(args.csv_path,
+                         text_col_name=args.text,
+                         label_col_name=args.labels,
+                         #*********
+                         epochs=1,
+                         #*********
+                         learning_rate=2e-5,
+                         batch_size=32,
+                         logfile=args.logfile,
+                         delete_db=args.deletedb
+                         )
+         
     
-    pa = BertTrainer(args.csv_path,
-                                  text_col_name=args.text,
-                                  label_col_name=args.labels,
-                                  #*********
-                                  epochs=1,
-                                  #*********
-                                  learning_rate=2e-5,
-                                  batch_size=32,
-                                  logfile=args.logfile,
-                                  delete_db=args.deletedb
-                                  )
-    #pa.print_test_results()

@@ -3,8 +3,11 @@ Created on Jun 12, 2020
 
 @author: paepcke
 '''
-from torch.utils.data import DataLoader
 from contextlib import contextmanager
+
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+
 
 class BertFeederDataloader(DataLoader):
     '''
@@ -118,6 +121,29 @@ class BertFeederDataloader(DataLoader):
 
     def __getitem__(self, indx):
         return self.dataset[indx]
+    
+# -------------------- Multiprocessing Dataloader -----------
+
+class MultiprocessingDataloader(BertFeederDataloader):
+    
+    #------------------------------------
+    # Constructor 
+    #-------------------
+
+    def __init__(self, dataset, world_size, node_rank, **kwargs):
+        
+        sampler = DistributedSampler(
+            dataset,
+            num_replicas=world_size,
+            rank=node_rank
+            )
+
+        super().__init__(dataset,
+                         shuffle=False,
+                         num_workers=0,
+                         pin_memory=True,
+                         sampler=sampler,
+                         **kwargs)
 
 # ------------------------ set_split_id Context Manager
 
