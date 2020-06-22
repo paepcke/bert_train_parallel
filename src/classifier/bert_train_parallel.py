@@ -12,6 +12,8 @@ import os, sys
 import random
 import time
 
+import numpy as np
+
 import GPUtil
 from apex import amp
 from apex.parallel import DistributedDataParallel
@@ -28,8 +30,7 @@ from bert_feeder_dataloader import BertFeederDataloader
 from bert_feeder_dataloader import set_split_id
 from bert_feeder_dataset import BertFeederDataset
 from logging_service import LoggingService
-import numpy as np
-from src.classifier.bert_feeder_dataloader import MultiprocessingDataloader
+from bert_feeder_dataloader import MultiprocessingDataloader
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
