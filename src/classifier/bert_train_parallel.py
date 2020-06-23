@@ -159,7 +159,8 @@ class BertTrainer(object):
                                     text_col_name=text_col_name,
                                     label_col_name=label_col_name,
                                     sequence_len=sequence_len,
-                                    delete_db=delete_db
+                                    delete_db=delete_db,
+                                    quiet=True if self.gpu_device == self.CPU_DEV else False
                                     )
         if self.gpu_device == self.CPU_DEV:
             dataloader = BertFeederDataloader(dataset, 
