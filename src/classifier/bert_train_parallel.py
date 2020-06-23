@@ -182,7 +182,9 @@ class BertTrainer(object):
                                               batch_size=self.batch_size)
             
         else:
-            dataloader = MultiprocessingDataloader(dataset, 
+            dataloader = MultiprocessingDataloader(dataset,
+                                                   self.world_size,
+                                                   self.node_rank, 
                                                    batch_size=self.batch_size)
 
         # Save the label_encodings dict in a db table,
