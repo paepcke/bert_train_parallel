@@ -168,8 +168,20 @@ class BertFeederDataset(Dataset):
             sqlite_path = file_path + '.sqlite'
 
         db_exists = os.path.exists(sqlite_path)
-        # Ask user about fate of the existing sqlite db? 
-        if not quiet: 
+        csv_file_exists = os.path.exists(csv_path)
+        # If neither the csv file nor a full sqlite db
+        # exist: scold the user:
+        if not db_exists and not csv_file_exists:
+            raise IOError(f"Neither csv path, nor equivalent Sqlite db file exist.")
+                
+        # Ask user about fate of the existing sqlite db?
+        if quiet: 
+            if db_exists:
+                use_db = True
+            else:
+                use_db = False
+        else:
+            # Requested to interact with user if appropriate:
             if db_exists:
                 if delete_db is None:
                     # Ask user whether to delete db:
@@ -181,10 +193,6 @@ class BertFeederDataset(Dataset):
                     # parsing the CSV file?
                     use_db = self.query_yes_no("OK, not deleting; use instead of CSV file?",
                                            'no')
-        else:
-            # Supposed to do default, which is to use existing 
-            # db if it exists:
-            use_db = True 
             
         # Check that we didn't delete the db in the above:
         if os.path.exists(sqlite_path) and use_db:
