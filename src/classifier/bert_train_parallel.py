@@ -241,12 +241,12 @@ class BertTrainer(object):
         self.rank = BertTrainer.node_rank * BertTrainer.gpus + gpu
         os.environ['RANK'] = str(self.rank)
         os.environ['WORLD_SIZE'] = str(self.world_size)
-        dist.init_process_group(                                   
-            backend='nccl',                                         
-            init_method='env://',                                   
-            #world_size=BertTrainer.world_size,
-            #rank=self.rank
-        )           
+        if self.rank == 0:
+            dist.init_process_group(
+                backend='nccl',
+                init_method='env://'
+                #init_method='tcp://172.24.75.114:7777'
+        )
 
 
     #------------------------------------
@@ -1042,38 +1042,70 @@ class BertTrainer(object):
              'GPU_memory_used': self.gpu_obj.memoryUsed
              }
             )
-        
-    #------------------------------------
-    # launch_trainer 
-    #-------------------
-    
-    @classmethod
-    def launch_trainer(cls, process_indx, argparse_args):
-        
-        # argparse_args is named for clarity. For
-        # brevity:
-        args = argparse_args
-        # Total number of GPUs (to use) on this node:
-        BertTrainer.gpus = args.gpus
-        # Total number of GPUs on all machines (nodes): 
-        BertTrainer.world_size = args.world_size
-        
-        # Rank of this node among all the nodes 
-        # that will be involved in the computations:
-        BertTrainer.node_rank = args.nr
-        
-        _pa = BertTrainer(args.csv_path,
-                         text_col_name=args.text,
-                         label_col_name=args.labels,
-                         #*********
-                         epochs=1,
-                         #*********
-                         learning_rate=2e-5,
-                         batch_size=32,
-                         logfile=args.logfile,
-                         delete_db=args.deletedb
-                         )
 
+# -------------------- Launch Function ----------------
+        
+#------------------------------------
+# launch_trainer 
+#-------------------
+
+def launch_trainer(process_indx, argparse_args):
+    '''
+    Called by the torch.multiprocessing.spawn()
+    function each time a process is forked to 
+    operated one of this machine's GPUs. The
+    process_indx provides an index into the 
+    processes, increasing with each call.
+    
+    The argsparse_args must contain at least
+    the following:
+    
+        gpus       : the number of GPUs to use
+                     on this machine
+        world_size : the number of GPUs used across
+                     all machines
+        nr         : the 'rank' of this node 
+                     (a.k.a. machine). Rank is
+                     just a number assigned to each
+                     participating machine. That
+                     assignment is done manually by the user
+                     when they start this script on
+                     each node. 
+    
+    Any remaining argparse args are passed to the entry
+    point of the process being forked.
+    
+    This function must be at top level of its module. 
+    
+    @param process_indx:
+    @type process_indx:
+    @param argparse_args:
+    @type argparse_args:
+    '''
+    
+    # argparse_args is named for clarity. For
+    # brevity:
+    args = argparse_args
+    # Total number of GPUs (to use) on this node:
+    BertTrainer.gpus = args.gpus
+    # Total number of GPUs on all machines (nodes): 
+    BertTrainer.world_size = args.world_size
+    
+    # Rank of this node among all the nodes 
+    # that will be involved in the computations:
+    BertTrainer.node_rank = args.nr
+    
+    _pa = BertTrainer(args.csv_path,
+                     text_col_name=args.text,
+                     label_col_name=args.labels,
+                     #*********
+                     epochs=1,
+                     #*********
+                     learning_rate=2e-5,
+                     batch_size=32,
+                     logfile=args.logfile,
+                     delete_db=args.deletedb
+                     )
 
 # -------------------- Main ----------------
 if __name__ == '__main__':
