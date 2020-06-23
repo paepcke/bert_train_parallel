@@ -1208,10 +1208,10 @@ if __name__ == '__main__':
     #**********
     args.deletedb = True
     # set PyTorch distributed related environmental variables
-    os.environ["MASTER_ADDR"] = '127.0.0.1'
-    os.environ["MASTER_PORT"] = str(29500)
-    os.environ["WORLD_SIZE"] = str(3)
-    os.environ["RANK"] = str(0)
+#     os.environ["MASTER_ADDR"] = '127.0.0.1'
+#     os.environ["MASTER_PORT"] = str(29500)
+#     os.environ["WORLD_SIZE"] = str(3)
+#     os.environ["RANK"] = str(0)
     #**********
     _pa = BertTrainer(args.csv_path,
                      text_col_name=args.text,
