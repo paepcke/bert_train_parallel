@@ -157,6 +157,10 @@ class BertTrainer(object):
             # We were launched via the launch.py script,
             # with local_rank indicating the GPU device
             # to use.
+            # Internalize the promised env vars RANK and
+            # WORLD_SIZE:
+            self.node_rank = os.environ['RANK']
+            self.world_size = os.environ['WORLD_SIZE']
             self.init_multiprocessing()
 
         if model_save_path is None:
