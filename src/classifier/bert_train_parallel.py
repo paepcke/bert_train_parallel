@@ -618,9 +618,9 @@ class BertTrainer(object):
                                                     labels=b_labels)
                     
                     if self.gpu_device != self.CPU_DEV:
-                        b_input_ids = b_input_ids.to(self.CPU_DEV)
-                        logits = logits.to(self.CPU_DEV)
-                        b_labels = b_labels.to(self.CPU_DEV)
+                        b_input_ids = b_input_ids.to('cpu')
+                        logits = logits.to('cpu')
+                        b_labels = b_labels.to('cpu')
                         del b_input_mask
                         cuda.empty_cache()                    
     
@@ -828,8 +828,8 @@ class BertTrainer(object):
             # Move logits and labels to CPU, if the
             # are not already:
             if self.gpu_device != self.CPU_DEV:
-                logits = logits.to(self.CPU_DEV)
-                b_labels = b_labels.to(self.CPU_DEV)
+                logits = logits.to('cpu')
+                b_labels = b_labels.to('cpu')
                 cuda.empty_cache()
 
             # Get the class prediction from the 
