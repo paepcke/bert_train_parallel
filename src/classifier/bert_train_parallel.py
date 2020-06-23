@@ -241,7 +241,7 @@ class BertTrainer(object):
         self.rank = BertTrainer.node_rank * BertTrainer.gpus + gpu
         os.environ['RANK'] = str(self.rank)
         os.environ['WORLD_SIZE'] = str(self.world_size)
-        if self.rank == 0:
+        if self.process_indx == 0:
             dist.init_process_group(
                 backend='nccl',
                 init_method='env://'
@@ -1095,6 +1095,12 @@ def launch_trainer(process_indx, argparse_args):
     # that will be involved in the computations:
     BertTrainer.node_rank = args.nr
     
+    # The how manyeth time this function is called.
+    # Used in init_process_group() to determine who
+    # is the first (process 0), and therefore needs
+    # to init the group
+    BertTrainer.process_indx = process_indx
+    
     _pa = BertTrainer(args.csv_path,
                      text_col_name=args.text,
                      label_col_name=args.labels,
@@ -1159,7 +1165,7 @@ if __name__ == '__main__':
         args.world_size = args.gpus * args.nodes                #
         os.environ['MASTER_ADDR'] = '172.24.75.114'             #
         os.environ['MASTER_PORT'] = '7777'                      #
-        mp.spawn(BertTrainer.launch_trainer, 
+        mp.spawn(launch_trainer, 
                  nprocs=args.gpus, 
                  args=(args,))
     else:
