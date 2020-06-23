@@ -32,8 +32,6 @@ from bert_feeder_dataset import BertFeederDataset
 from logging_service import LoggingService
 from bert_feeder_dataloader import MultiprocessingDataloader
 import torch.distributed as dist
-import torch.multiprocessing as mp
-
 
 # Mixed floating point facility (Automatic Mixed Precision)
 # From Nvidia: https://nvidia.github.io/apex/amp.html
@@ -121,7 +119,8 @@ class BertTrainer(object):
                  learning_rate=3e-5,
                  label_encodings=None,
                  logfile=None,
-                 delete_db=False
+                 delete_db=False,
+                 local_rank=None
                  ):
         '''
         Number of epochs: 2, 3, 4 
@@ -142,13 +141,23 @@ class BertTrainer(object):
             self.label_encodings = self.LABEL_ENCODINGS
         else:
             self.label_encodings = label_encodings
+            
+        self.local_rank = local_rank
+            
         # The following call also sets self.gpu_obj
         # to a GPUtil.GPU instance, so we can check
         # on the GPU status along the way:
         
-        self.gpu_device = self.enable_GPU()
-        if self.gpu_device != self.CPU_DEV:
-            self.init_multiprocessing(self.gpu_device)
+        self.gpu_device = self.enable_GPU(self.local_rank)
+        #**************
+        #self.gpu_device = 0
+        #**************
+        if self.gpu_device != self.CPU_DEV and \
+            self.local_rank is not None:
+            # We were launched via the launch.py script,
+            # with local_rank indicating the GPU device
+            # to use.
+            self.init_multiprocessing()
 
         if model_save_path is None:
             (csv_file_root, _ext) = os.path.splitext(csv_path)
@@ -160,10 +169,12 @@ class BertTrainer(object):
                                     label_col_name=label_col_name,
                                     sequence_len=sequence_len,
                                     delete_db=delete_db,
-                                    quiet=True if self.gpu_device == self.CPU_DEV else False
+                                    quiet=True if self.gpu_device != self.CPU_DEV else False
                                     )
         if self.gpu_device == self.CPU_DEV:
             dataloader = BertFeederDataloader(dataset, 
+                                              self.world_size,
+                                              self.node_rank,
                                               batch_size=self.batch_size)
             
         else:
@@ -237,24 +248,18 @@ class BertTrainer(object):
     #------------------------------------
     # init_multiprocessing 
     #-------------------
-    
-    def init_multiprocessing(self, gpu):
-        self.rank = BertTrainer.node_rank * BertTrainer.gpus + gpu
-        os.environ['RANK'] = str(self.rank)
-        os.environ['WORLD_SIZE'] = str(self.world_size)
-        if self.process_indx == 0:
-            dist.init_process_group(
-                backend='nccl',
-                init_method='env://'
-                #init_method='tcp://172.24.75.114:7777'
-        )
 
+    def init_multiprocessing(self):
+        dist.init_process_group(
+            backend='nccl',
+            init_method='env://'
+        )
 
     #------------------------------------
     # enable_GPU 
     #-------------------
 
-    def enable_GPU(self, raise_gpu_unavailable=True):
+    def enable_GPU(self, local_rank, raise_gpu_unavailable=True):
         '''
         Returns the device id (an int) of an 
         available GPU. If none is exists on this 
@@ -265,7 +270,9 @@ class BertTrainer(object):
         
         Initializes self.cuda_dev: f"cuda:{device_id}"
         
-        
+        @param local_rank: which GPU to use. Created by the launch.py
+            script. If None, just look for the next available GPU
+        @type local_rank: {None|int|
         @param raise_gpu_unavailable: whether to raise error
             when GPUs exist on this machine, but none are available.
         @type raise_gpu_unavailable: bool
@@ -287,10 +294,23 @@ class BertTrainer(object):
         if len(gpu_objs) == 0:
             return self.CPU_DEV
 
-        # GPUs are installed, are any available, given
-        # their current memory/cpu usage? We use the 
-        # default maxLoad of 0.5 and maxMemory of 0.5
-        # as OK to use GPU:
+        # GPUs are installed. Did caller ask for a 
+        # specific GPU?
+        
+        if local_rank is not None:
+            # Sanity check: did caller ask for a non-existing
+            # GPU id?
+            num_gpus = len(GPUtil.getGPUs())
+            if num_gpus < local_rank + 1:
+                # Definitely an error, don't revert to CPU:
+                raise NoGPUAvailable(f"Request to use GPU {local_rank}, but only {num_gpus} available on this machine.")
+            cuda.set_device(local_rank)
+            return local_rank
+        
+        # Caller did not ask for a specific GPU. Are any 
+        # GPUs available, given their current memory/cpu 
+        # usage? We use the default maxLoad of 0.5 and 
+        # maxMemory of 0.5 as OK to use GPU:
         
         try:
             # If a GPU is available, the following returns
@@ -309,21 +329,26 @@ class BertTrainer(object):
         
         # Get the GPU object that has the found
         # deviceID:
-        for gpu_obj in gpu_objs:
-            if gpu_obj.id == device_id:
-                self.gpu_obj = gpu_obj
-                break
-            
-        if self.gpu_obj is None:
-            # This should not happen:
-            raise NoGPUAvailable(f"GPU availability yields dev Id {device_id}; yet none of GPUs has that id")
+        self.gpu_obj_from_devid(device_id)
         
         # Initialize a string to use for moving 
         # tensors between GPU and cpu with their
         # to(device=...) method:
         self.cuda_dev = f"cuda:{device_id}" 
         return device_id 
+
+    #------------------------------------
+    # gpu_obj_from_devid 
+    #-------------------
     
+    def gpu_obj_from_devid(self, devid):
+
+        for gpu_obj in GPUtil.getGPUs():
+            if gpu_obj.id == devid:
+                self.gpu_obj = gpu_obj
+                break
+        return self.gpu_obj
+
     #------------------------------------
     # prepare_model 
     #-------------------
@@ -1144,45 +1169,61 @@ if __name__ == '__main__':
                         default=False
                         )
     # Parallelism:
-    parser.add_argument('-n', '--nodes', default=1,
-                        type=int, metavar='N')
-    parser.add_argument('-g', '--gpus', default=1, type=int,
-                        help='number of gpus per node')
-    parser.add_argument('-nr', '--nr', default=0, type=int,
-                        help='ranking within the nodes')    
+    parser.add_argument('-r', '--local_rank',
+                        type=int,
+                        default=None,
+                        help='the GPU rank (sequence number) created by launch.py.\n' +
+                             'Equivalent to the cuda device ID of the GPU to use.'
+                        )
+    
+    
+    #************
+#     parser.add_argument('-n', '--nodes', default=1,
+#                         type=int, metavar='N')
+#     parser.add_argument('-g', '--gpus', default=1, type=int,
+#                         help='number of gpus per node')
+#     parser.add_argument('-nr', '--nr', default=0, type=int,
+#                         help='ranking within the nodes')
+    #************    
 
     parser.add_argument('csv_path',
                         help='path to csv file to process')
 
     args = parser.parse_args();
 
+    # If local_rank is other than None, this script was spawned
+    # by the launch.py script for parallel GPU processing. The value
+    # will indicate which GPU we are to use. Ensure that we actually
+    # have at least as many GPUs as the local_rank suggests:
+    
+    local_rank = args.local_rank
+    
     #**********
     #args.csv_path = os.path.join(data_dir, "facebook_ads_clean.csv")
     #args.text = 'text'
     #args.labels = 'leaning'
     #args.deletedb=False
     #**********
-    if len(GPUtil.getGPUs()) > 0:
-        args.world_size = args.gpus * args.nodes                #
-        os.environ['MASTER_ADDR'] = '172.24.75.114'             #
-        os.environ['MASTER_PORT'] = '7777'                      #
-        mp.spawn(launch_trainer, 
-                 nprocs=args.gpus, 
-                 args=(args,))
-    else:
-        #**********
-        args.deletedb = True
-        #**********
-        _pa = BertTrainer(args.csv_path,
-                         text_col_name=args.text,
-                         label_col_name=args.labels,
-                         #*********
-                         epochs=1,
-                         #*********
-                         learning_rate=2e-5,
-                         batch_size=32,
-                         logfile=args.logfile,
-                         delete_db=args.deletedb
-                         )
+    
+    #**********
+    args.deletedb = True
+    # set PyTorch distributed related environmental variables
+    os.environ["MASTER_ADDR"] = '127.0.0.1'
+    os.environ["MASTER_PORT"] = str(29500)
+    os.environ["WORLD_SIZE"] = str(3)
+    os.environ["RANK"] = str(0)
+    #**********
+    _pa = BertTrainer(args.csv_path,
+                     text_col_name=args.text,
+                     label_col_name=args.labels,
+                     #*********
+                     epochs=1,
+                     #*********
+                     learning_rate=2e-5,
+                     batch_size=32,
+                     logfile=args.logfile,
+                     delete_db=args.deletedb,
+                     local_rank=args.local_rank
+                     )
          
     
