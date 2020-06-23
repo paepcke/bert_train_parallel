@@ -127,11 +127,20 @@ class BertTrainer(object):
         '''
         
         if logfile is None:
-            default_logfile_name = os.path.join(os.path.dirname(__file__), 'facebook_train.log')
+            default_logfile_name = os.path.join(os.path.dirname(__file__), 
+                                                'bert_train.log' if local_rank is None 
+                                                else f'bert_train_{local_rank}.log'
+                                                )
             self.log = LoggingService(logfile=default_logfile_name)
         elif logfile == 'stdout':
             self.log = LoggingService()
         else:
+            # Logfile name provided by caller. Still
+            # need to disambiguate between multiple processes,
+            # if appropriate:
+            if local_rank is not None:
+                (logfile_root, ext) = os.path.splitext(logfile)
+                logfile = f"{logfile_root}_{local_rank}{ext}"
             self.log = LoggingService(logfile=logfile)
         
         self.batch_size = batch_size
@@ -159,8 +168,8 @@ class BertTrainer(object):
             # to use.
             # Internalize the promised env vars RANK and
             # WORLD_SIZE:
-            self.node_rank = os.environ['RANK']
-            self.world_size = os.environ['WORLD_SIZE']
+            self.node_rank = int(os.environ['RANK'])
+            self.world_size = int(os.environ['WORLD_SIZE'])
             self.init_multiprocessing()
 
         if model_save_path is None:
@@ -311,6 +320,8 @@ class BertTrainer(object):
                 # Definitely an error, don't revert to CPU:
                 raise NoGPUAvailable(f"Request to use GPU {local_rank}, but only {num_gpus} available on this machine.")
             cuda.set_device(local_rank)
+            # Part of the code uses self.cuda_dev
+            self.cuda_dev = local_rank
             return local_rank
         
         # Caller did not ask for a specific GPU. Are any 
@@ -340,7 +351,7 @@ class BertTrainer(object):
         # Initialize a string to use for moving 
         # tensors between GPU and cpu with their
         # to(device=...) method:
-        self.cuda_dev = f"cuda:{device_id}" 
+        self.cuda_dev = device_id 
         return device_id 
 
     #------------------------------------
