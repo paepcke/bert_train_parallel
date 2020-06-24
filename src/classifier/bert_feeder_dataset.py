@@ -56,7 +56,10 @@ class FrozenDataset(Dataset):
     #-------------------
     
     def split_id(self):
-        return self._split_id
+        try:
+            return self._split_id
+        except AttributeError:
+            return "Not Yet Split"
 
     #------------------------------------
     # reset
