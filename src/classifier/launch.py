@@ -163,7 +163,7 @@ def parse_args():
                              "lower than this one. I.e. on nodes where launch.py"
                               "was already called."
                               )
-    parser.add_argument("--nhere_gpus", type=int, default=1,
+    parser.add_argument("--nhere_gpus", type=int,
                         help=f"number of GPUs to use on this node; default is all: {num_gpus_here}",
                         default=num_gpus_here
                         )
@@ -216,7 +216,7 @@ def main():
 
     processes = []
 
-    if 'OMP_NUM_THREADS' not in os.environ and args.nproc_per_node > 1:
+    if 'OMP_NUM_THREADS' not in os.environ and args.nhere_gpus > 1:
         current_env["OMP_NUM_THREADS"] = str(1)
         print("*****************************************\n"
               "Setting OMP_NUM_THREADS environment variable for each process "
@@ -239,15 +239,10 @@ def main():
             if args.module:
                 cmd.append("-m")
         else:
-            if not args.use_env:
-                raise ValueError("When using the '--no_python' flag, you must also set the '--use_env' flag.")
             if args.module:
                 raise ValueError("Don't use both the '--no_python' flag and the '--module' flag at the same time.")
 
         cmd.append(args.training_script)
-
-        if not args.use_env:
-            cmd.append("--local_rank={}".format(local_rank))
 
         cmd.extend(args.training_script_args)
 

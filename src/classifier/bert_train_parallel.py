@@ -32,6 +32,7 @@ from bert_feeder_dataset import BertFeederDataset
 from logging_service import LoggingService
 from bert_feeder_dataloader import MultiprocessingDataloader
 import torch.distributed as dist
+from builtins import None
 
 # Mixed floating point facility (Automatic Mixed Precision)
 # From Nvidia: https://nvidia.github.io/apex/amp.html
@@ -161,6 +162,11 @@ class BertTrainer(object):
         #**************
         #self.gpu_device = 0
         #**************
+        try:
+            self.local_rank = os.environ['LOCAL_RANK']
+        except KeyError:
+            self.local_rank = None
+            
         if self.gpu_device != self.CPU_DEV and \
             self.local_rank is not None:
             # We were launched via the launch.py script,
@@ -1192,14 +1198,6 @@ if __name__ == '__main__':
                         action='store_true',
                         default=False
                         )
-    # Parallelism:
-    parser.add_argument('-r', '--local_rank',
-                        type=int,
-                        default=None,
-                        help='the GPU rank (sequence number) created by launch.py.\n' +
-                             'Equivalent to the cuda device ID of the GPU to use.'
-                        )
-    
     
     #************
 #     parser.add_argument('-n', '--nodes', default=1,
