@@ -144,7 +144,9 @@ import sys
 import subprocess
 import os
 from argparse import ArgumentParser, REMAINDER
+import GPUtil
 
+num_gpus_here = len(GPUtil.get_cpus())
 
 def parse_args():
     """
@@ -156,17 +158,14 @@ def parse_args():
                                         "multiple distributed processes")
 
     # Optional arguments for the launch helper
-    parser.add_argument("--nnodes", type=int, default=1,
-                        help="The number of nodes to use for distributed "
-                             "training")
-    parser.add_argument("--node_rank", type=int, default=0,
-                        help="The rank of the node for multi-node distributed "
-                             "training")
-    parser.add_argument("--nproc_per_node", type=int, default=1,
-                        help="The number of processes to launch on each node, "
-                             "for GPU training, this is recommended to be set "
-                             "to the number of GPUs in your system so that "
-                             "each process can be bound to a single GPU.")
+    parser.add_argument("--nprev_gpus", type=int, default=0,
+                        help="Total number of GPUs used on nodes with ranks "
+                             "lower than this one. I.e. on nodes where launch.py
+                              was already called."
+    parser.add_argument("--nhere_gpus", type=int, default=1,
+                        help=f"number of GPUs to use on this node; default is all: {num_gpus_here}",
+                        default=num_gpus_here
+                        )
     parser.add_argument("--master_addr", default="127.0.0.1", type=str,
                         help="Master node (rank 0)'s address, should be either "
                              "the IP address or the hostname of node 0, for "
@@ -176,18 +175,15 @@ def parse_args():
                         help="Master node (rank 0)'s free port that needs to "
                              "be used for communication during distributed "
                              "training")
-    parser.add_argument("--use_env", default=False, action="store_true",
-                        help="Use environment variable to pass "
-                             "'local rank'. For legacy reasons, the default value is False. "
-                             "If set to True, the script will not pass "
-                             "--local_rank as argument, and will instead set LOCAL_RANK.")
     parser.add_argument("-m", "--module", default=False, action="store_true",
                         help="Changes each process to interpret the launch script "
                              "as a python module, executing with the same behavior as"
                              "'python -m'.")
     parser.add_argument("--no_python", default=False, action="store_true",
                         help="Do not prepend the training script with \"python\" - just exec "
-                             "it directly. Useful when the script is not a Python script.")
+                             "it directly. Useful when the script is not a Python script, "
+                             "or has a #! at the top.
+                        )
 
     # positional
     parser.add_argument("training_script", type=str,
@@ -203,8 +199,13 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # world size in terms of number of processes
-    dist_world_size = args.nproc_per_node * args.nnodes
+    # world size in terms of number of processes, which is
+    # equal to number of GPUs used on all machines together.
+    # Number of GPUs used on the other nodes, plus the ones
+    # used on this machine:
+    
+    dist_world_size = args.nprev_gpus + args.nhere_gpus
+    #dist_world_size = args.nproc_per_node * args.nnodes
 
     # set PyTorch distributed related environmental variables
     current_env = os.environ.copy()
@@ -223,9 +224,9 @@ def main():
               "your application as needed. \n"
               "*****************************************".format(current_env["OMP_NUM_THREADS"]))
 
-    for local_rank in range(0, args.nproc_per_node):
-        # each process's rank
-        dist_rank = args.nproc_per_node * args.node_rank + local_rank
+    for local_rank in range(0, args.nhere_gpus):
+        # each process's rank in terms of GPUs:
+        dist_rank = args.nprev_gpus + local_rank
         current_env["RANK"] = str(dist_rank)
         current_env["LOCAL_RANK"] = str(local_rank)
 

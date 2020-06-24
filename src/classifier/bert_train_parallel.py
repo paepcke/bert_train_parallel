@@ -499,7 +499,14 @@ class BertTrainer(object):
         
             # Measure how long the training epoch takes.
             t0 = time.time()
-        
+
+            if self.gpu_device != self.CPU_DEV:
+                # Multiple GPUs are involved. Tell
+                # the sampler that a new epoch is started,
+                # so not all GPUs use the same order of
+                # samples in each epoch:
+                self.dataloader.set_epoch(epoch_i)
+
             # When using a GPU, we check GPU memory 
             # at critical moments, and store the result
             # as a dict in the following list:
@@ -681,7 +688,7 @@ class BertTrainer(object):
             except Exception as e:
                 msg = f"During train: {repr(e)}\n"
                     
-                if self.gpu_device != self.CPU_DEV:
+                if self.gpu_device != self.CPU_DEV and self.gpu_obj is not None:
                     self.log.err(f"GPU memory used at crash time: {self.gpu_obj.memoryUsed}")
                     msg += "GPU use history:\n"
                     for chckpt_dict in self.gpu_status_history:
@@ -779,7 +786,7 @@ class BertTrainer(object):
         except Exception as e:
             msg = f"During validate: {repr(e)}\n"
 
-            if self.gpu_device != self.CPU_DEV:
+            if self.gpu_device != self.CPU_DEV  and self.gpu_obj is not None:
                 self.log.err(f"GPU memory used at crash time: {self.gpu_obj.memoryUsed}")
                 msg += "GPU use history:\n"
                 for chckpt_dict in self.gpu_status_history:
@@ -1223,7 +1230,7 @@ if __name__ == '__main__':
     #**********
     
     #**********
-    args.deletedb = True
+    #args.deletedb = True
     # set PyTorch distributed related environmental variables
 #     os.environ["MASTER_ADDR"] = '127.0.0.1'
 #     os.environ["MASTER_PORT"] = str(29500)

@@ -266,13 +266,31 @@ class BertFeederDataset(Dataset):
         @param split_id:
         @type split_id:
         '''
-        
+
+        # After replenishing the requested
+        # queue, check whether that queue was
+        # self.curr_queue. If so, change self.curr_queue
+        # to point to the new, refilled queue. Else
+        # self.curr_queue remains unchanged:
+                
         if split_id == 'train':
-            self.train_queue = self.saved_queues['train']
+            old_train = self.train_queue
+            self.train_queue = self.saved_queues['train'].copy()
+            if self.curr_queue == old_train:
+                self.curr_queue = self.train_queue
+
         elif split_id == 'validate':
-            self.val_queue = self.saved_queues['validate']
+            old_val = self.val_queue
+            self.val_queue = self.saved_queues['validate'].copy()
+            if self.curr_queue == old_val:
+                self.curr_queue = self.val_queue
+            
         elif split_id == 'test':
-            self.test_queue = self.saved_queues['test']
+            old_test = self.test_queue
+            self.test_queue = self.saved_queues['test'].copy()
+            if self.curr_queue == old_test:
+                self.curr_queue = self.test_queue
+
         else:
             raise ValueError(f"Dataset ID must be one of train/validate/test; was {split_id}")
 
@@ -401,7 +419,11 @@ class BertFeederDataset(Dataset):
     #-------------------
 
     def __next__(self):
-        next_sample_id = self.curr_queue.popleft()
+        try:
+            next_sample_id = self.curr_queue.popleft()
+        except IndexError:
+            raise StopIteration
+        
         res = self.db.execute(f'''
                                SELECT tok_ids,attention_mask,label
                                 FROM Samples 

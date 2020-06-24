@@ -132,18 +132,25 @@ class MultiprocessingDataloader(BertFeederDataloader):
 
     def __init__(self, dataset, world_size, node_rank, **kwargs):
         
-        sampler = DistributedSampler(
-            dataset,
-            num_replicas=world_size,
-            rank=node_rank
-            )
+        self.sampler = DistributedSampler(
+                dataset,
+                num_replicas=world_size,
+                rank=node_rank
+                )
 
         super().__init__(dataset,
                          shuffle=False,
                          num_workers=0,
                          pin_memory=True,
-                         sampler=sampler,
+                         sampler=self.sampler,
                          **kwargs)
+
+    #------------------------------------
+    # set_epoch 
+    #-------------------
+
+    def set_epoch(self, epoch):
+        self.sampler.set_epoch(epoch)
 
 # ------------------------ set_split_id Context Manager
 
