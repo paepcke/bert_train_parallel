@@ -160,8 +160,8 @@ def parse_args():
     # Optional arguments for the launch helper
     parser.add_argument("--nprev_gpus", type=int, default=0,
                         help="Total number of GPUs used on nodes with ranks "
-                             "lower than this one. I.e. on nodes where launch.py
-                              was already called."
+                             "lower than this one. I.e. on nodes where launch.py"
+                              "was already called."
     parser.add_argument("--nhere_gpus", type=int, default=1,
                         help=f"number of GPUs to use on this node; default is all: {num_gpus_here}",
                         default=num_gpus_here
