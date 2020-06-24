@@ -24,7 +24,167 @@ from text_augmentation import TextAugmenter
 #****TESTING = False
 TESTING = True
 
-class BertFeederDataset(Dataset):
+# ------------------------------- Class ReadOnlyDataset ----------
+
+class FrozenDataset(Dataset):
+
+    SPACE_TO_COMMA_PAT = re.compile(r'([0-9])[\s]+')
+    
+    #------------------------------------
+    # Constructor
+    #-------------------
+
+    def __init__(self,
+                 log,
+                 db,
+                 split_id,
+                 queue,
+                 label_mapping,
+                 sample_ids
+                 ):
+        self.log = log
+        self.db = db
+        self._split_id = split_id
+        self.label_mapping = label_mapping
+        self.sample_ids = sample_ids
+                
+        self.queue = queue
+        self.saved_queue = queue.copy()
+
+    #------------------------------------
+    # split_id
+    #-------------------
+    
+    def split_id(self):
+        return self._split_id
+
+    #------------------------------------
+    # reset
+    #-------------------
+
+    def reset(self):
+        '''
+        Sets the dataset's queue to the beginning.
+        '''
+
+        # Replenish the requested queue
+
+        self.queue = self.saved_queue
+
+# ---------------------- Utilities ---------------
+
+    #------------------------------------
+    # to_np_array 
+    #-------------------
+
+    def to_np_array(self, array_string):
+        '''
+        Given a string:
+          "[ 124  56  32]"
+        return an np_array: np.array([124,56,32]).
+        Also works for more reasonable strings like:
+          "[1, 2, 5]"
+        
+        @param array_string: the string to convert
+        @type array_string: str
+        '''
+
+        # Use the pattern to substitute occurrences of
+        # "123   45" with "123,45". The \1 refers to the
+        # digit that matched (i.e. the capture group):
+        proper_array_str = self.SPACE_TO_COMMA_PAT.sub(r'\1,', array_string)
+        # Remove extraneous spaces:
+        proper_array_str = re.sub('\s', '', proper_array_str)
+        # Turn from a string to array:
+        return np.array(ast.literal_eval(proper_array_str))
+
+    #------------------------------------
+    # clean_row_res
+    #-------------------
+    
+    def clean_row_res(self, row):
+        '''
+        Given a row object returned from sqlite, 
+        turn tok_ids and attention_mask into real
+        np arrays, rather than their original str
+        
+        @param row:
+        @type row:
+        '''
+        
+        # tok_ids are stored as strings:
+        row['tok_ids'] = self.to_np_array(row['tok_ids'])
+        row['attention_mask'] = self.to_np_array(row['attention_mask'])
+        return row
+
+    
+    #------------------------------------
+    # __next__ 
+    #-------------------
+
+    def __next__(self):
+        try:
+            next_sample_id = self.queue.popleft()
+        except IndexError:
+            raise StopIteration
+        
+        res = self.db.execute(f'''
+                               SELECT tok_ids,attention_mask,label
+                                FROM Samples 
+                               WHERE ROWID = {next_sample_id}
+                             ''')
+        row = next(res)
+        return self.clean_row_res(dict(row))
+    
+    #------------------------------------
+    # __getitem__ 
+    #-------------------
+
+    def __getitem__(self, indx):
+        '''
+        Return indx'th row from the db.
+        The entire queue is always used,
+        rather than the remaining queue
+        after some popleft() ops. 
+        
+        @param indx:
+        @type indx:
+        '''
+
+        ith_sample_id = self.saved_queue[indx]
+        res = self.db.execute(f'''
+                               SELECT tok_ids,attention_mask,label
+                                FROM Samples 
+                               WHERE ROWID = {ith_sample_id}
+                             ''')
+        # Return the (only result) row:
+        row = next(res)
+        return self.clean_row_res(dict(row))
+    
+    #------------------------------------
+    # __iter__ 
+    #-------------------
+    
+    def __iter__(self):
+        return self
+
+    #------------------------------------
+    # __len__
+    #-------------------
+    
+    def __len__(self):
+        '''
+        Return length of the current split. Use
+        switch_to_split() before calling this
+        method to get another split's length.
+        The length of the entire queue is returned,
+        not just what remains after calls to next()
+        '''
+        return len(self.saved_queue)
+
+# ------------------------------- Class BertFeederDataset ----------
+
+class SqliteDataset(FrozenDataset):
     '''
     Takes path to a CSV file prepared by ****????****
     Columns: id,advertiser,page,leaning,tokens,ids
@@ -45,8 +205,7 @@ class BertFeederDataset(Dataset):
     TEXT_COL_NAME   = 'text'
     LABEL_COL_NAME  = 'label'
     IDS_COL_NAME    = 'tok_ids'
-    
-    SPACE_TO_COMMA_PAT = re.compile(r'([0-9])[\s]+')
+
     
     #------------------------------------
     # Constructor 
@@ -191,7 +350,7 @@ class BertFeederDataset(Dataset):
                 else:
                     # Don't delete, but use it instead of
                     # parsing the CSV file?
-                    use_db = self.query_yes_no("OK, not deleting; use instead of CSV file?",
+                    use_db = self.query_yes_no("OK, not deleting database; use it instead of CSV file?",
                                            'no')
             
         # Check that we didn't delete the db in the above:
@@ -254,7 +413,7 @@ class BertFeederDataset(Dataset):
         raise ValueError("Bad curr_queue")
         
     #------------------------------------
-    # seek 
+    # reset
     #-------------------
 
     def reset(self, split_id=None):
@@ -639,6 +798,48 @@ class BertFeederDataset(Dataset):
         self.saved_queues['validate'] = self.val_queue.copy()
         self.saved_queues['test'] = self.test_queue.copy()
         
+        self.train_frozen_dataset = FrozenDataset(self.log,
+                                                  self.db,
+                                                  'train',
+                                                  self.saved_queues['train'],
+                                                  self.label_mapping,
+                                                  self.sample_ids
+                                                  )
+        
+        self.validate_frozen_dataset = FrozenDataset(self.log,
+                                                     self.db,
+                                                     'validate',
+                                                     self.saved_queues['validate'],
+                                                     self.label_mapping,
+                                                     self.sample_ids
+                                                     )
+        
+        self.test_frozen_dataset = FrozenDataset(self.log,
+                                                 self.db,
+                                                 'test',
+                                                 self.saved_queues['test'],
+                                                 self.label_mapping,
+                                                 self.sample_ids
+                                                 )
+        
+    #------------------------------------
+    # clean_row_res
+    #-------------------
+    
+    def clean_row_res(self, row):
+        '''
+        Given a row object returned from sqlite, 
+        turn tok_ids and attention_mask into real
+        np arrays, rather than their original str
+        
+        @param row:
+        @type row:
+        '''
+        
+        # tok_ids are stored as strings:
+        row['tok_ids'] = self.to_np_array(row['tok_ids'])
+        row['attention_mask'] = self.to_np_array(row['attention_mask'])
+        return row
         return (self.train_queue, self.val_queue, self.test_queue)
 
     #------------------------------------
@@ -700,51 +901,6 @@ class BertFeederDataset(Dataset):
         insert_vals = list(the_dict.items())
         self.db.executemany(f"INSERT INTO {table_name} VALUES(?,?);", insert_vals)
         self.db.commit()
-
-    #------------------------------------
-    # to_np_array 
-    #-------------------
-
-    def to_np_array(self, array_string):
-        '''
-        Given a string:
-          "[ 124  56  32]"
-        return an np_array: np.array([124,56,32]).
-        Also works for more reasonable strings like:
-          "[1, 2, 5]"
-        
-        @param array_string: the string to convert
-        @type array_string: str
-        '''
-
-        # Use the pattern to substitute occurrences of
-        # "123   45" with "123,45". The \1 refers to the
-        # digit that matched (i.e. the capture group):
-        proper_array_str = self.SPACE_TO_COMMA_PAT.sub(r'\1,', array_string)
-        # Remove extraneous spaces:
-        proper_array_str = re.sub('\s', '', proper_array_str)
-        # Turn from a string to array:
-        return np.array(ast.literal_eval(proper_array_str))
-
-
-    #------------------------------------
-    # clean_row_res
-    #-------------------
-    
-    def clean_row_res(self, row):
-        '''
-        Given a row object returned from sqlite, 
-        turn tok_ids and attention_mask into real
-        np arrays, rather than their original str
-        
-        @param row:
-        @type row:
-        '''
-        
-        # tok_ids are stored as strings:
-        row['tok_ids'] = self.to_np_array(row['tok_ids'])
-        row['attention_mask'] = self.to_np_array(row['attention_mask'])
-        return row
 
     #------------------------------------
     # yes_no_question 

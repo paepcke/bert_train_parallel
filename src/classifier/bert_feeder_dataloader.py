@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 
-class BertFeederDataloader(DataLoader):
+class SqliteDataLoader(DataLoader):
     '''
     A dataloader that works with instances of 
     BertFeederDataset (see bert_feeder_dataset.py).
@@ -35,31 +35,26 @@ class BertFeederDataloader(DataLoader):
     # Constructor 
     #-------------------
     
-    def __init__(self, split_id, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.my_split = split_id
+    def __init__(self, dataset, *args, **kwargs):
+        super().__init__(dataset, *args, **kwargs)
+        self.my_split = dataset.split_id()
 
     #------------------------------------
     # split 
     #-------------------
 
-    def split_dataset(self, *args, **kwargs):
-        self.dataset.split_dataset(*args, sample_ids_or_df=None, **kwargs)
-
-    #------------------------------------
-    # switch_to_split 
-    #-------------------
-
-    def switch_to_split(self, split_id):
-        self.dataset.switch_to_split(split_id)
+    # No longer allowed. Instance is now initialized
+    # with a frozen sub-collection.
+    #def split_dataset(self, *args, **kwargs):
+    #    self.dataset.split_dataset(*args, sample_ids_or_df=None, **kwargs)
 
     #------------------------------------
     # curr_split 
     #-------------------
     
-    def curr_split(self):
+    def split_id(self):
         '''
-        Return the current split id: 'train',
+        Return this loader's dataset split id: 'train',
         'validate', or 'test'
         '''
         return self.my_split
@@ -69,59 +64,37 @@ class BertFeederDataloader(DataLoader):
     # reset_split
     #-------------------
 
-    def reset_split(self, split_id):
+    def reset_split(self):
         '''
         Sets the dataset's queue to the
         start.
-        
-        @param split_id: the data split to reset
-        @type split_id: {'train'|'validate'|'test'}
         '''
-        with set_split_id(self, split_id):
-            self.dataset.reset(split_id)
+        self.dataset.reset()
 
     #------------------------------------
     # __len__ 
     #-------------------
 
     def __len__(self):
-        with set_split_id(self, self.my_split):
-            return len(self.dataset)
+        return len(self.dataset)
     
     #------------------------------------
     # __getitem__
     #-------------------
 
     def __getitem__(self, indx):
-        with set_split_id(self, self.my_split):
-            return self.dataset[indx]
-        
-    #------------------------------------
-    # __iter__
-    #-------------------
-    
-    def __iter__(self):
-        return self
-
-    #------------------------------------
-    # __next__ 
-    #-------------------
-    
-    def __next__(self):
-        with set_split_id(self, self.my_split):
-            return super().__next__()
+        return self.dataset[indx]
 
 # -------------------- Multiprocessing Dataloader -----------
 
-class MultiprocessingDataloader(BertFeederDataloader):
+class MultiprocessingDataloader(SqliteDataLoader):
     
     #------------------------------------
     # Constructor 
     #-------------------
 
-    def __init__(self, split_id, dataset, world_size, node_rank, **kwargs):
+    def __init__(self, dataset, world_size, node_rank, **kwargs):
         
-        self.split_id = split_id
         self.dataset  = dataset
         
         self.sampler = DistributedSampler(
@@ -130,8 +103,7 @@ class MultiprocessingDataloader(BertFeederDataloader):
                 rank=node_rank
                 )
 
-        super().__init__(split_id,
-                         dataset,
+        super().__init__(dataset,
                          shuffle=False,
                          num_workers=0,
                          pin_memory=True,

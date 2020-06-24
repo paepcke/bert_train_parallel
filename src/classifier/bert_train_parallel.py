@@ -30,9 +30,8 @@ import torch
 from transformers import AdamW, BertForSequenceClassification
 from transformers import get_linear_schedule_with_warmup
 
-from bert_feeder_dataloader import BertFeederDataloader
-from bert_feeder_dataloader import set_split_id
-from bert_feeder_dataset import BertFeederDataset
+from bert_feeder_dataloader import SqliteDataLoader
+from bert_feeder_dataset import SqliteDataset
 from logging_service import LoggingService
 from bert_feeder_dataloader import MultiprocessingDataloader
 import torch.distributed as dist
@@ -189,14 +188,14 @@ class BertTrainer(object):
             self.node_rank  = 0
         #**************
 
-        dataset = BertFeederDataset(csv_path,
-                                    self.label_encodings,
-                                    text_col_name=text_col_name,
-                                    label_col_name=label_col_name,
-                                    sequence_len=sequence_len,
-                                    delete_db=delete_db,
-                                    quiet=True if self.gpu_device != self.CPU_DEV else False
-                                    )
+        dataset = SqliteDataset(csv_path,
+                                self.label_encodings,
+                                text_col_name=text_col_name,
+                                label_col_name=label_col_name,
+                                sequence_len=sequence_len,
+                                delete_db=delete_db,
+                                quiet=True if self.gpu_device != self.CPU_DEV else False
+                                )
 
         # Save the label_encodings dict in a db table,
         # but reversed: int-code ==> label-str
@@ -216,48 +215,38 @@ class BertTrainer(object):
                               random_seed=self.RANDOM_SEED)
         
         if self.gpu_device == self.CPU_DEV:
-            dataset.switch_to_split('train')
-            self.train_dataloader = BertFeederDataloader('train',
-                                                         dataset,
-                                                         batch_size=self.batch_size
-                                                         )
-            dataset.switch_to_split('validate')
-            self.val_dataloader = BertFeederDataloader('validate',
-                                                       dataset,
-                                                       batch_size=self.batch_size
-                                                       )
-                                                         
 
-            dataset.switch_to_split('test')
-            self.test_dataloader = BertFeederDataloader('test',
-                                                        dataset,
-                                                        batch_size=self.batch_size
-                                                        )
+            # CPU bound, single machine:
+
+            self.train_dataloader = SqliteDataLoader(dataset.train_frozen_dataset,
+                                                     batch_size=self.batch_size
+                                                     )
+            self.val_dataloader = SqliteDataLoader(dataset.validate_frozen_dataset,
+                                                   batch_size=self.batch_size
+                                                   )
                                                          
+            self.test_dataloader = SqliteDataLoader(dataset.validate_frozen_dataset,
+                                                    batch_size=self.batch_size
+                                                    )
             
         else:
-            dataset.switch_to_split('train')            
-            self.train_dataloader = MultiprocessingDataloader('train',
-                                                              dataset,
+            # GPUSs used, single or multiple machines:
+            
+            self.train_dataloader = MultiprocessingDataloader(dataset.train_frozen_dataset,
                                                               self.world_size,
                                                               self.node_rank, 
                                                               batch_size=self.batch_size
                                                               )
-            dataset.switch_to_split('validate')
-            self.val_dataloader = MultiprocessingDataloader('validate',
-                                                            dataset,
+            self.val_dataloader = MultiprocessingDataloader(dataset.validate_frozen_dataset,
                                                             self.world_size,
                                                             self.node_rank, 
                                                             batch_size=self.batch_size
                                                             )
-            dataset.switch_to_split('test')
-            self.test_dataloader = MultiprocessingDataloader('test',
-                                                             dataset,
+            self.test_dataloader = MultiprocessingDataloader(dataset.test_frozen_dataset,
                                                              self.world_size,
                                                              self.node_rank, 
                                                              batch_size=self.batch_size
                                                              )
-            
 
         #**************
         if self.testing_cuda_on_cpu:
@@ -614,7 +603,7 @@ class BertTrainer(object):
             # For each batch of training data...
             # Tell data loader to pull from the train sample queue,
             # starting over:
-            self.train_dataloader.reset_split('train')
+            self.train_dataloader.reset_split()
             try:
                 for sample_counter, batch in enumerate(self.train_dataloader):
 
@@ -770,7 +759,7 @@ class BertTrainer(object):
             #nb_eval_steps = 0
         
             # Start feeding validation set from the beginning:
-            self.val_dataloader.reset_split('validate')
+            self.val_dataloader.reset_split()
             # Evaluate data for one epoch
             for batch in self.val_dataloader:
                 
@@ -1294,7 +1283,7 @@ if __name__ == '__main__':
                      batch_size=32,
                      logfile=args.logfile,
                      delete_db=args.deletedb,
-                     testing_cuda_on_cpu=True
+                     testing_cuda_on_cpu=False
                      )
          
     
