@@ -784,7 +784,7 @@ class BertTrainer(object):
                 # Tell pytorch not to bother with constructing the compute graph during
                 # the forward pass, since this is only needed for backprop (training).
                 with torch.no_grad():        
-        
+
                     # Forward pass, calculate logit predictions.
                     # token_type_ids is the same as the "segment ids", which 
                     # differentiates sentence 1 and 2 in 2-sentence tasks.
@@ -797,8 +797,17 @@ class BertTrainer(object):
                                                     attention_mask=b_input_mask,
                                                     labels=b_labels)
                 # Accumulate the validation loss and accuracy
-                total_val_loss += val_loss.item()
-                total_val_accuracy += self.accuracy(logits, b_labels)
+                    total_val_loss += val_loss.item()
+
+                if self.gpu_device != self.CPU_DEV:
+                    logits.cpu()
+                    val_loss.cpu()
+                    b_labels.cpu()
+                try:
+                    total_val_accuracy += self.accuracy(logits, b_labels)
+                except TrainError as e:
+                    self.log.err(f"In epoch {epoch_i} (when total_val_loss is {total_val_loss}: {repr(e)}")
+                    raise TrainError from e
 
                 if self.gpu_device != self.CPU_DEV:
                     del b_input_ids
