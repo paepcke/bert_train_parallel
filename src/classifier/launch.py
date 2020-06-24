@@ -146,7 +146,7 @@ import os
 from argparse import ArgumentParser, REMAINDER
 import GPUtil
 
-num_gpus_here = len(GPUtil.get_cpus())
+num_gpus_here = len(GPUtil.getGPUs())
 
 def parse_args():
     """
@@ -162,6 +162,7 @@ def parse_args():
                         help="Total number of GPUs used on nodes with ranks "
                              "lower than this one. I.e. on nodes where launch.py"
                               "was already called."
+                              )
     parser.add_argument("--nhere_gpus", type=int, default=1,
                         help=f"number of GPUs to use on this node; default is all: {num_gpus_here}",
                         default=num_gpus_here
@@ -182,7 +183,7 @@ def parse_args():
     parser.add_argument("--no_python", default=False, action="store_true",
                         help="Do not prepend the training script with \"python\" - just exec "
                              "it directly. Useful when the script is not a Python script, "
-                             "or has a #! at the top.
+                             "or has a #! at the top."
                         )
 
     # positional
