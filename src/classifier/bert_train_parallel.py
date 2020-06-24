@@ -2,6 +2,10 @@
 '''
 Created on Jun 8, 2020
 
+TODO:
+   o Ensure equal distribution of labels in dataset
+     splits. See https://stackoverflow.com/questions/50544730/how-do-i-split-a-custom-dataset-into-training-and-test-datasets
+
 @author: paepcke
 '''
 
@@ -32,7 +36,6 @@ from bert_feeder_dataset import BertFeederDataset
 from logging_service import LoggingService
 from bert_feeder_dataloader import MultiprocessingDataloader
 import torch.distributed as dist
-from builtins import None
 
 # Mixed floating point facility (Automatic Mixed Precision)
 # From Nvidia: https://nvidia.github.io/apex/amp.html
@@ -121,16 +124,22 @@ class BertTrainer(object):
                  label_encodings=None,
                  logfile=None,
                  delete_db=False,
-                 local_rank=None
+                 testing_cuda_on_cpu=False
                  ):
         '''
         Number of epochs: 2, 3, 4 
         '''
+        self.testing_cuda_on_cpu = testing_cuda_on_cpu
+
+        try:
+            self.local_rank = int(os.environ['LOCAL_RANK'])
+        except KeyError:
+            self.local_rank = None
         
         if logfile is None:
             default_logfile_name = os.path.join(os.path.dirname(__file__), 
-                                                'bert_train.log' if local_rank is None 
-                                                else f'bert_train_{local_rank}.log'
+                                                'bert_train.log' if self.local_rank is None 
+                                                else f'bert_train_{self.local_rank}.log'
                                                 )
             self.log = LoggingService(logfile=default_logfile_name)
         elif logfile == 'stdout':
@@ -139,9 +148,9 @@ class BertTrainer(object):
             # Logfile name provided by caller. Still
             # need to disambiguate between multiple processes,
             # if appropriate:
-            if local_rank is not None:
+            if self.local_rank is not None:
                 (logfile_root, ext) = os.path.splitext(logfile)
-                logfile = f"{logfile_root}_{local_rank}{ext}"
+                logfile = f"{logfile_root}_{self.local_rank}{ext}"
             self.log = LoggingService(logfile=logfile)
         
         self.batch_size = batch_size
@@ -152,21 +161,11 @@ class BertTrainer(object):
         else:
             self.label_encodings = label_encodings
             
-        self.local_rank = local_rank
-            
         # The following call also sets self.gpu_obj
         # to a GPUtil.GPU instance, so we can check
         # on the GPU status along the way:
         
         self.gpu_device = self.enable_GPU(self.local_rank)
-        #**************
-        #self.gpu_device = 0
-        #**************
-        try:
-            self.local_rank = os.environ['LOCAL_RANK']
-        except KeyError:
-            self.local_rank = None
-            
         if self.gpu_device != self.CPU_DEV and \
             self.local_rank is not None:
             # We were launched via the launch.py script,
@@ -182,6 +181,14 @@ class BertTrainer(object):
             (csv_file_root, _ext) = os.path.splitext(csv_path)
             model_save_path = csv_file_root + '_trained_model' + '.sav'
         # Preparation:
+        #**************
+        if self.testing_cuda_on_cpu:
+            self.cuda_dev   = 0
+            self.gpu_device = 0
+            self.world_size = 3
+            self.node_rank  = 0
+        #**************
+
         dataset = BertFeederDataset(csv_path,
                                     self.label_encodings,
                                     text_col_name=text_col_name,
@@ -190,17 +197,6 @@ class BertTrainer(object):
                                     delete_db=delete_db,
                                     quiet=True if self.gpu_device != self.CPU_DEV else False
                                     )
-        if self.gpu_device == self.CPU_DEV:
-            dataloader = BertFeederDataloader(dataset, 
-                                              self.world_size,
-                                              self.node_rank,
-                                              batch_size=self.batch_size)
-            
-        else:
-            dataloader = MultiprocessingDataloader(dataset,
-                                                   self.world_size,
-                                                   self.node_rank, 
-                                                   batch_size=self.batch_size)
 
         # Save the label_encodings dict in a db table,
         # but reversed: int-code ==> label-str
@@ -208,33 +204,73 @@ class BertTrainer(object):
         for (key, val) in self.label_encodings.items():
             inverse_label_encs[str(val)] = key
             
-        dataloader.save_dict_to_table('LabelEncodings', 
-                                      inverse_label_encs, 
-                                      delete_existing=True)
+        dataset.save_dict_to_table('LabelEncodings', 
+                                   inverse_label_encs, 
+                                   delete_existing=True)
 
-        self.dataloader = dataloader
+        # Split the dataset into train/validate/test,
+        # and create a separate dataloader for each:
+        dataset.split_dataset(train_percent=0.8,
+                              val_percent=0.1,
+                              test_percent=0.1,
+                              random_seed=self.RANDOM_SEED)
+        
+        if self.gpu_device == self.CPU_DEV:
+            dataset.switch_to_split('train')
+            self.train_dataloader = BertFeederDataloader('train',
+                                                         dataset,
+                                                         batch_size=self.batch_size
+                                                         )
+            dataset.switch_to_split('validate')
+            self.val_dataloader = BertFeederDataloader('validate',
+                                                       dataset,
+                                                       batch_size=self.batch_size
+                                                       )
+                                                         
 
-        # Have the loader prepare 
-        dataloader.split_dataset(train_percent=0.8,
-                                 val_percent=0.1,
-                                 test_percent=0.1,
-                                 random_seed=self.RANDOM_SEED)
+            dataset.switch_to_split('test')
+            self.test_dataloader = BertFeederDataloader('test',
+                                                        dataset,
+                                                        batch_size=self.batch_size
+                                                        )
+                                                         
+            
+        else:
+            dataset.switch_to_split('train')            
+            self.train_dataloader = MultiprocessingDataloader('train',
+                                                              dataset,
+                                                              self.world_size,
+                                                              self.node_rank, 
+                                                              batch_size=self.batch_size
+                                                              )
+            dataset.switch_to_split('validate')
+            self.val_dataloader = MultiprocessingDataloader('validate',
+                                                            dataset,
+                                                            self.world_size,
+                                                            self.node_rank, 
+                                                            batch_size=self.batch_size
+                                                            )
+            dataset.switch_to_split('test')
+            self.test_dataloader = MultiprocessingDataloader('test',
+                                                             dataset,
+                                                             self.world_size,
+                                                             self.node_rank, 
+                                                             batch_size=self.batch_size
+                                                             )
+            
+
+        #**************
+        if self.testing_cuda_on_cpu:
+            self.gpu_device = self.CPU_DEV
+        #**************
 
         # TRAINING:        
-        dataset.switch_to_split('train')
-        (self.model, self.optimizer, self.scheduler) = self.prepare_model(dataloader,
+        (self.model, self.optimizer, self.scheduler) = self.prepare_model(self.train_dataloader,
                                                                           learning_rate)
-        #******* If works, delete this:
-#         # Make the model multiprocessing-aware:
-#         self.model = DistributedDataParallel(self.model,
-#                                              device_ids=[self.gpu_device])
-        #*******
-        
         self.train(epochs)
         
         # TESTING:
 
-        dataloader.switch_to_split('test')
         (predictions, labels) = self.test()
         
         # EVALUATE RESULT:
@@ -506,12 +542,16 @@ class BertTrainer(object):
             # Measure how long the training epoch takes.
             t0 = time.time()
 
+            #*************
+            if self.testing_cuda_on_cpu:
+                self.gpu_device = 0
+            #*************
             if self.gpu_device != self.CPU_DEV:
                 # Multiple GPUs are involved. Tell
                 # the sampler that a new epoch is started,
                 # so not all GPUs use the same order of
                 # samples in each epoch:
-                self.dataloader.set_epoch(epoch_i)
+                self.train_dataloader.set_epoch(epoch_i)
 
             # When using a GPU, we check GPU memory 
             # at critical moments, and store the result
@@ -574,10 +614,9 @@ class BertTrainer(object):
             # For each batch of training data...
             # Tell data loader to pull from the train sample queue,
             # starting over:
-            self.dataloader.switch_to_split('train')
-            self.dataloader.reset_split('train')
+            self.train_dataloader.reset_split('train')
             try:
-                for sample_counter, batch in enumerate(self.dataloader):
+                for sample_counter, batch in enumerate(self.train_dataloader):
 
 
                     # Progress update every 50 batches.
@@ -586,9 +625,10 @@ class BertTrainer(object):
                         elapsed = self.log.info(f"{self.format_time(time.time() - t0)}") 
                         
                         # Report progress.
-                        self.log.info('  Batch {:>5,}  of  {:>5,}.    Elapsed: {:}.'.format(sample_counter, 
-                                                                                            len(self.dataloader), 
-                                                                                            elapsed))
+                        self.log.info('  Batch {:>5,}  of  {:>5,}.    Elapsed: {:}.'
+                                      .format(sample_counter, 
+                                              len(self.train_dataloader), 
+                                              elapsed))
             
                     # Unpack this training batch from our dataloader. 
                     #
@@ -599,6 +639,10 @@ class BertTrainer(object):
                     #   [0]: input ids 
                     #   [1]: attention masks
                     #   [2]: labels
+                    #**********
+                    if self.testing_cuda_on_cpu:
+                        self.gpu_device = self.CPU_DEV
+                    #**********
                     if self.gpu_device == self.CPU_DEV:
                         b_input_ids = batch['tok_ids']
                         b_input_mask = batch['attention_mask']
@@ -687,9 +731,8 @@ class BertTrainer(object):
                     self.scheduler.step()
 
                 # Calculate the average loss over all of the batches.
-                with set_split_id(self.dataloader, 'train'):
-                    avg_train_loss = total_train_loss / len(self.dataloader)
-                    avg_train_accuracy = total_train_accuracy / len(self.dataloader)
+                avg_train_loss = total_train_loss / len(self.train_dataloader)
+                avg_train_accuracy = total_train_accuracy / len(self.train_dataloader)
 
             except Exception as e:
                 msg = f"During train: {repr(e)}\n"
@@ -726,11 +769,10 @@ class BertTrainer(object):
             total_val_loss = 0
             #nb_eval_steps = 0
         
-            self.dataloader.switch_to_split('validate')
             # Start feeding validation set from the beginning:
-            self.dataloader.reset_split('validate')
+            self.val_dataloader.reset_split('validate')
             # Evaluate data for one epoch
-            for batch in self.dataloader:
+            for batch in self.val_dataloader:
                 
                 # Unpack this training batch from our dataloader. 
                 #
@@ -778,9 +820,8 @@ class BertTrainer(object):
                     cuda.empty_cache()
 
             # Calculate the average loss over all of the batches.
-            with set_split_id(self.dataloader, 'validate'):
-                avg_val_loss = total_val_loss / len(self.dataloader)
-                avg_val_accuracy = total_val_accuracy / len(self.dataloader)
+            avg_val_loss = total_val_loss / len(self.val_dataloader)
+            avg_val_accuracy = total_val_accuracy / len(self.val_dataloader)
             
             # Measure how long the validation run took.
             validation_time = self.format_time(time.time() - t0)
@@ -816,11 +857,16 @@ class BertTrainer(object):
         
         # Tracking variables 
         all_predictions , all_labels = [], []
+
+        #***********
+        if self.testing_cuda_on_cpu:
+            self.gpu_device = self.CPU_DEV
+        #***********
         
         # Predict
         # Batches come as dicts with keys
         # sample_id, tok_ids, label, attention_mask: 
-        for batch in self.dataloader:
+        for batch in self.test_dataloader:
             if self.gpu_device == self.CPU_DEV:
                 b_input_ids = batch['tok_ids']
                 b_input_mask = batch['attention_mask']
@@ -837,6 +883,11 @@ class BertTrainer(object):
                                             token_type_ids=None, 
                                             attention_mask=b_input_mask,
                                             labels=b_labels)
+
+            #***********
+            if self.testing_cuda_on_cpu:
+                self.gpu_device = self.CPU_DEV
+            #***********
                     
             # Move logits and labels to CPU, if the
             # are not already:
@@ -866,6 +917,11 @@ class BertTrainer(object):
                     #                                           matrix_labels=matrix_labels
                     #                                           )}
                 }
+
+        #***********
+        if self.testing_cuda_on_cpu:
+            self.gpu_device = self.CPU_DEV
+        #***********
 
         if self.gpu_device != self.CPU_DEV:
             del loss
@@ -1213,13 +1269,6 @@ if __name__ == '__main__':
 
     args = parser.parse_args();
 
-    # If local_rank is other than None, this script was spawned
-    # by the launch.py script for parallel GPU processing. The value
-    # will indicate which GPU we are to use. Ensure that we actually
-    # have at least as many GPUs as the local_rank suggests:
-    
-    local_rank = args.local_rank
-    
     #**********
     #args.csv_path = os.path.join(data_dir, "facebook_ads_clean.csv")
     #args.text = 'text'
@@ -1245,7 +1294,7 @@ if __name__ == '__main__':
                      batch_size=32,
                      logfile=args.logfile,
                      delete_db=args.deletedb,
-                     local_rank=args.local_rank
+                     testing_cuda_on_cpu=True
                      )
          
     

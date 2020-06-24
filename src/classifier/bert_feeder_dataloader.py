@@ -31,6 +31,13 @@ class BertFeederDataloader(DataLoader):
           avg_val_accuracy = total_eval_accuracy / len(dataloader)
     
     '''
+    #------------------------------------
+    # Constructor 
+    #-------------------
+    
+    def __init__(self, split_id, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.my_split = split_id
 
     #------------------------------------
     # split 
@@ -55,7 +62,8 @@ class BertFeederDataloader(DataLoader):
         Return the current split id: 'train',
         'validate', or 'test'
         '''
-        return self.dataset.curr_split_id()
+        return self.my_split
+        #return self.dataset.curr_split_id()
 
     #------------------------------------
     # reset_split
@@ -69,59 +77,40 @@ class BertFeederDataloader(DataLoader):
         @param split_id: the data split to reset
         @type split_id: {'train'|'validate'|'test'}
         '''
-        
-        self.dataset.reset(split_id)
-
-    #------------------------------------
-    # save_dict_to_table 
-    #-------------------
-    
-    def save_dict_to_table(self, table_name, the_dict, delete_existing=False):
-        '''
-        Given a dict, save it to a table in the underlying
-        database. Given that this class is a data*loader*,
-        this method isn't logical to be here. But I don't
-        want to whole new class for this facility.
-        
-        If the table exists, action depends on delete_existing.
-        If True, the table is deleted first. Else the dict values
-        are added as rows. 
-        
-        It is the caller's responsibility to ensure that:
-        
-           - Dict values are db-appropriate data types: int, float, etc.
-           - The table name is a legal Sqlite table name  
-        
-        @param table_name: name of the table
-        @type table_name: str
-        @param dict: col/value information to store
-        @type dict: {str : <any-db-appropriate>}
-        '''
-        db = self.dataset.db 
-        if delete_existing:
-            db.execute(f'''DROP TABLE IF EXISTS {table_name}''')
-            db.execute(f'''CREATE TABLE {table_name} ('key_col' varchar(255),
-                                                      'val_col' varchar(255));''')
-            db.commit()
-
-        insert_vals = list(the_dict.items())
-        db.executemany(f"INSERT INTO {table_name} VALUES(?,?);", insert_vals)
-        db.commit()
+        with set_split_id(self, split_id):
+            self.dataset.reset(split_id)
 
     #------------------------------------
     # __len__ 
     #-------------------
 
     def __len__(self):
-        return len(self.dataset)
+        with set_split_id(self, self.my_split):
+            return len(self.dataset)
     
     #------------------------------------
-    # enumerate 
+    # __getitem__
     #-------------------
 
     def __getitem__(self, indx):
-        return self.dataset[indx]
+        with set_split_id(self, self.my_split):
+            return self.dataset[indx]
+        
+    #------------------------------------
+    # __iter__
+    #-------------------
     
+    def __iter__(self):
+        return self
+
+    #------------------------------------
+    # __next__ 
+    #-------------------
+    
+    def __next__(self):
+        with set_split_id(self, self.my_split):
+            return super().__next__()
+
 # -------------------- Multiprocessing Dataloader -----------
 
 class MultiprocessingDataloader(BertFeederDataloader):
@@ -130,7 +119,10 @@ class MultiprocessingDataloader(BertFeederDataloader):
     # Constructor 
     #-------------------
 
-    def __init__(self, dataset, world_size, node_rank, **kwargs):
+    def __init__(self, split_id, dataset, world_size, node_rank, **kwargs):
+        
+        self.split_id = split_id
+        self.dataset  = dataset
         
         self.sampler = DistributedSampler(
                 dataset,
@@ -138,7 +130,8 @@ class MultiprocessingDataloader(BertFeederDataloader):
                 rank=node_rank
                 )
 
-        super().__init__(dataset,
+        super().__init__(split_id,
+                         dataset,
                          shuffle=False,
                          num_workers=0,
                          pin_memory=True,

@@ -667,7 +667,40 @@ class BertFeederDataset(Dataset):
         self.db.executemany("INSERT INTO TestQueue VALUES(?);", test_tuples)
         
         self.db.commit()
+
+    #------------------------------------
+    # save_dict_to_table 
+    #-------------------
+    
+    def save_dict_to_table(self, table_name, the_dict, delete_existing=False):
+        '''
+        Given a dict, save it to a table in the underlying
+        database.
         
+        If the table exists, action depends on delete_existing.
+        If True, the table is deleted first. Else the dict values
+        are added as rows. 
+        
+        It is the caller's responsibility to ensure that:
+        
+           - Dict values are db-appropriate data types: int, float, etc.
+           - The table name is a legal Sqlite table name  
+        
+        @param table_name: name of the table
+        @type table_name: str
+        @param dict: col/value information to store
+        @type dict: {str : <any-db-appropriate>}
+        '''
+        if delete_existing:
+            self.db.execute(f'''DROP TABLE IF EXISTS {table_name}''')
+            self.db.execute(f'''CREATE TABLE {table_name} ('key_col' varchar(255),
+                                                          'val_col' varchar(255));''')
+            self.db.commit()
+
+        insert_vals = list(the_dict.items())
+        self.db.executemany(f"INSERT INTO {table_name} VALUES(?,?);", insert_vals)
+        self.db.commit()
+
     #------------------------------------
     # to_np_array 
     #-------------------
