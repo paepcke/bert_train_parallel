@@ -257,4 +257,14 @@ def main():
 
 
 if __name__ == "__main__":
+    #**********
+    # try:
+    #   os.remove('/tmp/epoch0.output')
+    # except FileNotFoundError:
+    #   pass
+    # try:
+    #     os.remove('/tmp/epoch1.output')
+    # except FileNotFoundError:
+    #   pass
+    #**********  
     main()
