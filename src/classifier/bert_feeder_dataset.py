@@ -388,6 +388,20 @@ class SqliteDataset(FrozenDataset):
         self.num_samples = len(self.train_queue)
 
     #------------------------------------
+    # train_set 
+    #-------------------
+
+    def get_datasplit(self, split_id):
+        if split_id == 'train':
+            return  self.train_frozen_dataset
+        elif split_id == 'validate':
+            return self.validate_frozen_dataset
+        elif split_id == 'test':
+            return self.test_frozen_dataset
+        else:
+            raise ValueError("Only train, validate, and test are valid split ids.")
+
+    #------------------------------------
     # switch_to_split 
     #-------------------
     

@@ -128,6 +128,10 @@ class BertTrainer(object):
         '''
         Number of epochs: 2, 3, 4 
         '''
+        # Whether or not we are testing GPU related
+        # code on a machine that only has a CPU.
+        # Obviously: only set to True in that situation.
+        # Don't use any computed results as real:
         self.testing_cuda_on_cpu = testing_cuda_on_cpu
 
         try:

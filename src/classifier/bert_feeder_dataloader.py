@@ -64,7 +64,7 @@ class SqliteDataLoader(DataLoader):
     # reset_split
     #-------------------
 
-    def reset_split(self):
+    def reset(self):
         '''
         Sets the dataset's queue to the
         start.
