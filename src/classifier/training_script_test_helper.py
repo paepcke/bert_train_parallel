@@ -12,6 +12,7 @@ from bert_feeder_dataset import SqliteDataset
 from bert_feeder_dataloader import MultiprocessingDataloader
 
 import torch
+from torch import cuda
 
 class TrainProcessTestHelper(object):
     '''
@@ -27,8 +28,13 @@ class TrainProcessTestHelper(object):
         node_rank  = int(os.environ['RANK'])
         local_rank = int(os.environ['LOCAL_RANK'])
 
-        torch.distributed.init_process_group(backend="nccl")
+        #***********
+        #***torch.distributed.init_process_group(backend="nccl")
+        torch.distributed.init_process_group(backend="nccl",
+                                             rank=node_rank)
+        #***********        
 
+        cuda.set_device(local_rank)
         self.compute_facilities = {0: 3, # node 0: 3 GPUs
                                    1: 3, # node 1: 2 GPUs
                                    }
