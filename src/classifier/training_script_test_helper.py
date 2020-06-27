@@ -60,6 +60,7 @@ class TrainProcessTestHelper(object):
                                                     )
         
         for epoch in range(2):
+            self.dataloader.set_epoch(epoch)
             self.run(epoch)
 
         print(self.accumulated_data)
