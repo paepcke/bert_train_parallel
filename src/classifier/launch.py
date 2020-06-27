@@ -103,8 +103,7 @@ by this module.
 
 ::
 
-    torch.distributed.init_process_group(backend='YOUR BACKEND',
-                                         init_method='env://')
+    torch.distributed.init_process_group(backend='YOUR BACKEND')
 
 4. In your training program, you can either use regular distributed functions
 or use :func:`torch.nn.parallel.DistributedDataParallel` module. If your
@@ -253,6 +252,9 @@ def main():
         process = subprocess.Popen(cmd, env=current_env)
         processes.append(process)
 
+    #***********
+    print(f"********Num processes launched: {len(processes)}")
+    #***********        
     for process in processes:
         process.wait()
         if process.returncode != 0:
