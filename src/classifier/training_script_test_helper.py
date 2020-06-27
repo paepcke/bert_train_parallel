@@ -19,13 +19,13 @@ class TrainProcessTestHelper(object):
     '''
 
 
-    def __init__(self, params):
+    def __init__(self):
         '''
         Constructor
         '''
-        world_size = os.environ['WORLD_SIZE']
-        node_rank  = os.environ['NODE_RANK']
-        local_rank = os.environ['LOCAL_RANK']
+        world_size = int(os.environ['WORLD_SIZE'])
+        node_rank  = int(os.environ['RANK'])
+        local_rank = int(os.environ['LOCAL_RANK'])
 
         torch.distributed.init_process_group(backend="nccl")
 
@@ -62,6 +62,7 @@ class TrainProcessTestHelper(object):
         for epoch in range(2):
             self.run(epoch)
 
+        print(self.accumulated_data)
         
     def run(self, epoch):
         for data in self.dataloader:
@@ -73,3 +74,8 @@ class TrainProcessTestHelper(object):
                 self.accumulated_data['epoch1'].append(int(data['sample_id']))
             else:
                 raise ValueError("Bad epoch")
+
+# ------------------ Main --------------
+
+if __name__ == '__main__':
+    TrainProcessTestHelper()

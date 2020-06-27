@@ -159,10 +159,13 @@ def parse_args():
                                         "multiple distributed processes")
 
     # Optional arguments for the launch helper
-    parser.add_argument("--nprev_gpus", type=int, default=0,
-                        help="Total number of GPUs used on nodes with ranks "
-                             "lower than this one. I.e. on nodes where launch.py"
-                              "was already called."
+
+    parser.add_argument("--node_rank", type=int, default=0,
+                        help="this machine's index into the number of machines (0 is the master);"
+                             "default: 0"
+                              )
+    parser.add_argument("--nother_gpus", type=int, default=0,
+                        help="Total number of GPUs used on other nodes; default: 0",
                               )
     parser.add_argument("--nhere_gpus", type=int,
                         help=f"number of GPUs to use on this node; default is all: {num_gpus_here}",
@@ -206,7 +209,7 @@ def main():
     # Number of GPUs used on the other nodes, plus the ones
     # used on this machine:
     
-    dist_world_size = args.nprev_gpus + args.nhere_gpus
+    dist_world_size = args.nother_gpus + args.nhere_gpus
     #dist_world_size = args.nproc_per_node * args.nnodes
 
     # set PyTorch distributed related environmental variables
@@ -228,7 +231,7 @@ def main():
 
     for local_rank in range(0, args.nhere_gpus):
         # each process's rank in terms of GPUs:
-        dist_rank = args.nprev_gpus + local_rank
+        dist_rank = args.nother_gpus + local_rank
         current_env["RANK"] = str(dist_rank)
         current_env["LOCAL_RANK"] = str(local_rank)
 
