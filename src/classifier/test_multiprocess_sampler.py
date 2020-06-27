@@ -7,11 +7,12 @@ Created on Jun 23, 2020
 import numpy as np
 
 import os
-import subprocess
 import sqlite3
 import unittest
-import pandas as pd
 import GPUtil
+import torch
+from torch import cuda
+from itertools import accumulate
 
 #*******
 # The following is a workaround for some library
@@ -21,6 +22,9 @@ os.environ['MKL_THREADING_LAYER'] = 'gnu'
 #*******
 from bert_feeder_dataloader import MultiprocessingDataloader
 from bert_feeder_dataset import SqliteDataset
+
+#******TEST_ALL = True
+TEST_ALL = False
 
 class MultiProcessSamperTester(unittest.TestCase):
     
@@ -47,16 +51,18 @@ class MultiProcessSamperTester(unittest.TestCase):
         cls.db.row_factory = sqlite3.Row
         
         cls.db.execute('''DROP TABLE IF EXISTS Samples''')
-        cls.db.execute('''CREATE TABLE Samples (tok_ids varchar(50),
+        cls.db.execute('''CREATE TABLE Samples (sample_id int,
+                                                tok_ids varchar(50),
                                                 attention_mask varchar(50),
                                                 label int
                                                 )
 
                                                ''')
         # 20 samples:
-        for serial_num in range(20):
+        for serial_num in range(24):
             cls.db.execute(f'''INSERT INTO Samples
-                            VALUES("[{serial_num+1}]",
+                            VALUES({serial_num},
+                                   "[{serial_num+1}]",
                                    "[0,1,0,0]",
                                   {serial_num+1}
                                   )
@@ -64,6 +70,17 @@ class MultiProcessSamperTester(unittest.TestCase):
             )
 
         cls.db.commit()
+        
+        # Setup env vars that the launch.py script 
+        # would normally set up:
+        
+        cls.num_gpus = len(GPUtil.getGPUs())
+        
+        os.environ['WORLD_SIZE'] = f"{cls.num_gpus}"
+        os.environ['RANK']       = '0'
+
+        if cls.num_gpus > 0:
+            torch.distributed.init_process_group(backend="nccl")
 
     #------------------------------------
     # setUp 
@@ -71,140 +88,118 @@ class MultiProcessSamperTester(unittest.TestCase):
     
     def setUp(self):
         unittest.TestCase.setUp(self)
-        label_mapping = {0, 'right',
-                         1, 'left',
-                         2, 'neutral'
-            }
-        self.dataset = SqliteDataset(
+
+        self.compute_facilities = {0: 3, # node 0: 3 GPUs
+                                   1: 3, # node 1: 2 GPUs
+                                   }
+        self.label_mapping = {0, 'right',
+                              1, 'left',
+                              2, 'neutral'
+                              }
+
+        self.test_db_path = os.path.join(os.path.dirname(__file__), 
+                                         'datasets/test_db.sqlite')
+
+#         self.dataset.split_dataset()
+#         self.train_dataset = self.dataset.get_datasplit('train')
+#         self.validate_dataset = self.dataset.get_datasplit('validate')
+#         self.test_dataset = self.dataset.get_datasplit('test')
+        
+    #------------------------------------
+    # testDistributedSampling
+    #-------------------
+
+    @unittest.skipIf(not TEST_ALL, 'Temporarily skip this test.')
+    def testDistributedSampling(self):
+        
+        collected_samples = []
+        if self.num_gpus == 0:
+            print("No GPUs on this machine. Skipping distributed sampling test")
+        for local_rank in range(self.num_gpus):
+            os.environ['LOCAL_RANK'] = f"{local_rank}"
+            samples = self.simulate_one_GPU_process()
+            collected_samples.append(samples)
+
+        self.output_check(collected_samples)
+
+    #------------------------------------
+    # simulate_one_GPU_process
+    #-------------------
+    
+    @unittest.skipIf(not TEST_ALL, 'Temporarily skip this test.')
+    def simulate_one_GPU_process(self):
+
+        world_size = int(os.environ['WORLD_SIZE'])
+        node_rank  = int(os.environ['RANK'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+        cuda.set_device(local_rank)
+        
+        dataset = SqliteDataset(
             'fake/csv/path',
-            label_mapping,
+            self.label_mapping,
             sqlite_path=self.test_db_path,
             sequence_len=128,
             text_col_name='foo',
             label_col_name='bar',
             delete_db=False,
             quiet=True
-            )        
+            )
         
-        self.dataset.split_dataset()
-        self.train_dataset = self.dataset.get_datasplit('train')
-        self.validate_dataset = self.dataset.get_datasplit('validate')
-        self.test_dataset = self.dataset.get_datasplit('test')
-        
-    #------------------------------------
-    # testDistributedSampling
-    #-------------------
+        self.dataloader = MultiprocessingDataloader(dataset, 
+                                                    world_size,
+                                                    node_rank=node_rank
+                                                    )
+        accumulated_data = {'epoch0' : [],
+                            'epoch1' : [],
+                            }
+        for epoch in range(2):
+            self.dataloader.set_epoch(epoch)
+            for data in self.dataloader:
+                if epoch == 0:
+                    # Even the sample_id comes back as
+                    # a tensor. Turn into an integer:
+                    accumulated_data['epoch0'].append(int(data['sample_id']))
+                elif epoch == 1:
+                    accumulated_data['epoch1'].append(int(data['sample_id']))
+                else:
+                    raise ValueError("Bad epoch")
+        return accumulated_data 
 
-    def testDistributedSampling(self):
-        if self.num_cuda_devs == 0:
-            print("Skipping testDistributedSampling because no GPUs on this machine")
-            return True
-
-        # The various processes will write the data collected
-        # during epoch0 to /tmp/epoch0.output, and the data
-        # collected during epoch1 to /tmp/epoch1.output. Delete
-        # those files first:
-
-        try:
-          os.remove('/tmp/epoch0.output')
-        except FileNotFoundError:
-          pass
-        try:
-            os.remove('/tmp/epoch1.output')
-        except FileNotFoundError:
-          pass
-
-        # Run launch.py, passing it the path to
-        # 'test_multiprocess_sampler_helper.py' as the
-        # script each process is to run. In a real system
-        # That would be the training script. This one
-        # has each process ask the dataloader for randomized
-        # samples that it can run on its GPUs, writing
-        # results to /tmp/epoch{0|1}.output.
-
-        # The launch.py script by default uses all GPUs
-        # on its machine:
-        
-        completed_proc = subprocess.run(['python3', self.launch_script_path, self.runtime_script])
-
-        # Ensure:
-        #   1. that among all processes both epochs cover
-        #      the entire dataset
-        #   2. that the dataset is traversed in a different
-        #      order between epoch 0 and epoch1
-        #   3. all GPUs are used
-        
-        self.assertTrue(self.output_check(0))
-        self.assertTrue(self.output_check(1))
-    
     #------------------------------------
     # output_check
     #-------------------
 
-    def output_check(self, epoch):
-        '''
-        Check /tmp/epoch0.output and /tmp/epoch1.output
-        to see wheter:
-
-           1. that among all processes both epochs cover
-              the entire dataset
-           2. that the dataset is traversed in a different
-              order between epoch 0 and epoch1
-           3. all GPUs are used
-
-        The output files look like this:
-
-        Node2 GPU2 14
-        Node2 GPU2 15
-           ...
-        Node1 GPU1 6
-        Node1 GPU1 8
-           ...
-        Node0 GPU0 20
-        Node0 GPU0 4
-           ...
-
-        '''
-
-        nodes_used   = set()
-        gpus_used    = set()
-        data_sampled = []
-
-        outfile = f"/tmp/epoch{epoch}.output"
-        with open(outfile, 'r') as epoch_fd:
-            for line in epoch_fd:
-                (node, gpu, sample) = line.split(' ')
-                node_num = node[-1]
-                gpu_num  = gpu[-1]
-                nodes_used.add(node_num)
-                gpus_used.add(gpu_num)
-                data_sampled.append(int(sample))
-
-            # Did every node 0-2 contribute to epoch0?
-            self.assertEqual(len(nodes_used), 3, f"Only nodes {nodes_used} were used; should be 3.")
-            self.assertEqual(len(gpus_used),
-                             self.num_cuda_devs,
-                             f"Only gpus {gpus_used} were used; should be {self.num_cuda_devs}."
-                             )
-
-            sorted_data = sorted(data_sampled)
-            expected    = list(np.array(range(20)) + 1)
-            self.assertEqual(expected, sorted_data)
-        return True
+    def output_check(self, accumulated_samples):
+        
+        epoch0_samples = []
+        epoch1_samples = []
+        
+        for process_collected_samples in accumulated_samples:
+            # Dict with epoch0 and epoch1 samples
+            # collected by one process:
+            epoch0_samples.extend(process_collected_samples['epoch0'])
+            epoch1_samples.extend(process_collected_samples['epoch1'])
+        
+        num_samples = len(self.dataloader)
+        self.assertEqual(len(epoch0_samples), num_samples)
+        self.assertEqual(len(epoch1_samples), num_samples)
+        self.assertEqual(epoch0_samples, epoch1_samples)
+        self.assertEqual(sorted(epoch0_samples) == range(num_samples))
+        self.assertEqual(sorted(epoch1_samples) == range(num_samples))
 
     #------------------------------------
     # run_through_samples 
     #-------------------
 
-    def run_through_samples(self,node_rank, df):
-    
-        for epoch in range(3):
-            self.dataloader.set_epoch(epoch)
-            df.loc[f"node{node_rank}"][f"epoch{epoch}"] = []
-            for res_dict in self.dataloader:
-                val = res_dict['tok_ids'][0][0]
-                df.loc[f"node{node_rank}"][f"epoch{epoch}"].append(int(val))
-        return df
+#     def run_through_samples(self,node_rank, df):
+#     
+#         for epoch in range(3):
+#             self.dataloader.set_epoch(epoch)
+#             df.loc[f"node{node_rank}"][f"epoch{epoch}"] = []
+#             for res_dict in self.dataloader:
+#                 val = res_dict['tok_ids'][0][0]
+#                 df.loc[f"node{node_rank}"][f"epoch{epoch}"].append(int(val))
+#         return df
 
 
 if __name__ == "__main__":
