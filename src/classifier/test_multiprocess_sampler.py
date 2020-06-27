@@ -78,6 +78,8 @@ class MultiProcessSamperTester(unittest.TestCase):
         
         os.environ['WORLD_SIZE'] = f"{cls.num_gpus}"
         os.environ['RANK']       = '0'
+        os.environ['MASTER_ADDR'] = '127.0.0.1'
+        os.environ['MASTER_PORT'] = '29500'
 
         if cls.num_gpus > 0:
             torch.distributed.init_process_group(backend="nccl")
