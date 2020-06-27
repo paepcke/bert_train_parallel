@@ -132,9 +132,9 @@ class FrozenDataset(Dataset):
             raise StopIteration
         
         res = self.db.execute(f'''
-                               SELECT tok_ids,attention_mask,label
+                               SELECT sample_id, tok_ids,attention_mask,label
                                 FROM Samples 
-                               WHERE ROWID = {next_sample_id}
+                               WHERE sample_id = {next_sample_id}
                              ''')
         row = next(res)
         return self.clean_row_res(dict(row))
@@ -156,9 +156,9 @@ class FrozenDataset(Dataset):
 
         ith_sample_id = self.saved_queue[indx]
         res = self.db.execute(f'''
-                               SELECT tok_ids,attention_mask,label
+                               SELECT sample_id, tok_ids,attention_mask,label
                                 FROM Samples 
-                               WHERE ROWID = {ith_sample_id}
+                               WHERE sample_id = {ith_sample_id}
                              ''')
         # Return the (only result) row:
         row = next(res)
@@ -372,9 +372,9 @@ class SqliteDataset(FrozenDataset):
                                             )
 
         num_samples_row = next(self.db.execute('''SELECT COUNT(*) AS num_samples from Samples'''))
+        num_samples = num_samples_row['num_samples']
         # Sqlite3 ROWIDs go from 1 to n
-        self.sample_ids = list(range(1,
-                                     num_samples_row['num_samples'] + 1))
+        self.sample_ids = list(range(num_samples))
 
         # Make a preliminary train queue with all the
         # sample ids. If split_dataset() is called later,
@@ -491,10 +491,6 @@ class SqliteDataset(FrozenDataset):
         
         CSV file must contain at least a column
         called self.text_col_name and self.table_col_name.
-        The sample_id column (a primary key) is implemented
-        through Sqlite's built-in ROWID, and is automatically
-        maintained by Sqlite.
-        
         
         @param csv_path: 
         @type csv_path:
@@ -533,11 +529,11 @@ class SqliteDataset(FrozenDataset):
         csv_fd = open(csv_path, 'r')
         db = sqlite3.connect(sqlite_path)
         db.row_factory = sqlite3.Row
-        # Note: SQLITE3 has automatic ROWID column, which 
-        #       will serve as our key:
+
         db.execute('''DROP TABLE IF EXISTS Samples''')
         db.execute('''
                    CREATE TABLE Samples (
+                      sample_id int primary key,
                       tok_ids text,
                       attention_mask text,
                       label int
@@ -601,9 +597,9 @@ class SqliteDataset(FrozenDataset):
             raise StopIteration
         
         res = self.db.execute(f'''
-                               SELECT tok_ids,attention_mask,label
+                               SELECT sample_id, tok_ids,attention_mask,label
                                 FROM Samples 
-                               WHERE ROWID = {next_sample_id}
+                               WHERE sample_id = {next_sample_id}
                              ''')
         row = next(res)
         return self.clean_row_res(dict(row))
@@ -625,9 +621,9 @@ class SqliteDataset(FrozenDataset):
 
         ith_sample_id = self.saved_queues[self.curr_split_id()][indx]
         res = self.db.execute(f'''
-                               SELECT tok_ids,attention_mask,label
+                               SELECT sample_id, tok_ids,attention_mask,label
                                 FROM Samples 
-                               WHERE ROWID = {ith_sample_id}
+                               WHERE sample_id = {ith_sample_id}
                              ''')
         # Return the (only result) row:
         row = next(res)
@@ -752,7 +748,7 @@ class SqliteDataset(FrozenDataset):
         saves copies of each in a dict (saved_queues).
         Returns a triplet with the queues. 
         
-        @param sample_ids_or_df: list of sqlite ROWIDs, or dataframe
+        @param sample_ids_or_df: list of sqlite sample_id, or dataframe
         @type sample_ids_or_df: {list|pandas.dataframe}
         @param train_percent: percentage of samples for training
         @type train_percent: float
