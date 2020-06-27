@@ -28,11 +28,7 @@ class TrainProcessTestHelper(object):
         node_rank  = int(os.environ['RANK'])
         local_rank = int(os.environ['LOCAL_RANK'])
 
-        #***********
-        #***torch.distributed.init_process_group(backend="nccl")
-        torch.distributed.init_process_group(backend="nccl",
-                                             rank=node_rank)
-        #***********        
+        torch.distributed.init_process_group(backend="nccl")
 
         cuda.set_device(local_rank)
         self.compute_facilities = {0: 3, # node 0: 3 GPUs
@@ -81,6 +77,8 @@ class TrainProcessTestHelper(object):
                 self.accumulated_data['epoch1'].append(int(data['sample_id']))
             else:
                 raise ValueError("Bad epoch")
+
+    def check_sampling_correctness(self, accumulated_data):
 
 # ------------------ Main --------------
 
