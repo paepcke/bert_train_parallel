@@ -172,4 +172,10 @@ class TrainProcessTestHelper(object):
 # ------------------ Main --------------
 
 if __name__ == '__main__':
-    TrainProcessTestHelper()
+    
+    # Expecting the result file template, 
+    # like: /tmp/Resultxyz_ for us to 
+    # create a file path to which to write
+    # our result dictionary:
+    
+    TrainProcessTestHelper(sys.argv[1])
