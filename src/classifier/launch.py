@@ -196,7 +196,7 @@ def parse_args():
                              "followed by all the arguments for the "
                              "training script")
 
-    # rest from the training program
+    # Rest of args are for the training program:
     parser.add_argument('training_script_args', nargs=REMAINDER)
     return parser.parse_args()
 

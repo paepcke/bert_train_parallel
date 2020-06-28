@@ -4,15 +4,17 @@ Created on Jun 23, 2020
 
 @author: paepcke
 '''
-import numpy as np
-
 import os
 import sqlite3
+import subprocess
+import tempfile
 import unittest
+
 import GPUtil
-import torch
-from torch import cuda
-from itertools import accumulate
+
+from bert_feeder_dataloader import MultiprocessingDataloader
+from bert_feeder_dataset import SqliteDataset
+
 
 #*******
 # The following is a workaround for some library
@@ -20,17 +22,16 @@ from itertools import accumulate
 # an error.
 os.environ['MKL_THREADING_LAYER'] = 'gnu'
 #*******
-from bert_feeder_dataloader import MultiprocessingDataloader
-from bert_feeder_dataset import SqliteDataset
+
 
 #******TEST_ALL = True
 TEST_ALL = False
 
-class MultiProcessSamperTester(unittest.TestCase):
+class MultiProcessSamplerTester(unittest.TestCase):
     
     test_db_path = os.path.join(os.path.dirname(__file__), 'datasets/test_db.sqlite')
     launch_script_path = os.path.join(os.path.dirname(__file__), 'launch.py')
-    runtime_script     = os.path.join(os.path.dirname(__file__), 'test_multiprocess_sampler_helper.py')
+    runtime_script     = os.path.join(os.path.dirname(__file__), 'training_script_test_helper.py')
 
     #------------------------------------
     # setupClass
@@ -38,7 +39,7 @@ class MultiProcessSamperTester(unittest.TestCase):
     
     @classmethod
     def setUpClass(cls):
-        super(MultiProcessSamperTester, cls).setUpClass()
+        super(MultiProcessSamplerTester, cls).setUpClass()
         
         cls.num_cuda_devs = len(GPUtil.getGPUs())
         
@@ -81,8 +82,10 @@ class MultiProcessSamperTester(unittest.TestCase):
         os.environ['MASTER_ADDR'] = '127.0.0.1'
         os.environ['MASTER_PORT'] = '29500'
 
-        if cls.num_gpus > 0:
-            torch.distributed.init_process_group(backend="nccl")
+#*************
+#         if cls.num_gpus > 0:
+#             torch.distributed.init_process_group(backend="nccl")
+#*************
 
     #------------------------------------
     # setUp 
@@ -111,76 +114,52 @@ class MultiProcessSamperTester(unittest.TestCase):
     # testDistributedSampling
     #-------------------
 
-    @unittest.skipIf(not TEST_ALL, 'Temporarily skip this test.')
+    #*****@unittest.skipIf(not TEST_ALL, 'Temporarily skip this test.')
     def testDistributedSampling(self):
-        
-        collected_samples = []
+
+        # Temp file template from which to derive
+        # the result files where each forked process
+        # puts its samples dict:
+
         if self.num_gpus == 0:
             print("No GPUs on this machine. Skipping distributed sampling test")
-        for local_rank in range(self.num_gpus):
-            os.environ['LOCAL_RANK'] = f"{local_rank}"
-            samples = self.simulate_one_GPU_process()
-            collected_samples.append(samples)
 
-        self.output_check(collected_samples)
-
-    #------------------------------------
-    # simulate_one_GPU_process
-    #-------------------
+        with tempfile.TemporaryDirectory(prefix='Results',dir='/tmp') as tmpdirname:
+            for local_rank in range(self.num_gpus):
+                os.environ['LOCAL_RANK'] = f"{local_rank}"
     
-    @unittest.skipIf(not TEST_ALL, 'Temporarily skip this test.')
-    def simulate_one_GPU_process(self):
+                # Launch processes:
+                completed_process = subprocess.run([self.launch_script_path,
+                                                    self.runtime_script,
+                                                    os.path.join(tmpdirname, 
+                                                                 f"result_{local_rank}.txt")
+                                                    ])
+                if completed_process.returncode != 0:
+                    print("*********Non zero return code from launch")
+    
+    
+                self.output_check(tmpdirname)
 
-        world_size = int(os.environ['WORLD_SIZE'])
-        node_rank  = int(os.environ['RANK'])
-        local_rank = int(os.environ['LOCAL_RANK'])
-        cuda.set_device(local_rank)
-        
-        dataset = SqliteDataset(
-            'fake/csv/path',
-            self.label_mapping,
-            sqlite_path=self.test_db_path,
-            sequence_len=128,
-            text_col_name='foo',
-            label_col_name='bar',
-            delete_db=False,
-            quiet=True
-            )
-        
-        self.dataloader = MultiprocessingDataloader(dataset, 
-                                                    world_size,
-                                                    node_rank=node_rank
-                                                    )
-        accumulated_data = {'epoch0' : [],
-                            'epoch1' : [],
-                            }
-        for epoch in range(2):
-            self.dataloader.set_epoch(epoch)
-            for data in self.dataloader:
-                if epoch == 0:
-                    # Even the sample_id comes back as
-                    # a tensor. Turn into an integer:
-                    accumulated_data['epoch0'].append(int(data['sample_id']))
-                elif epoch == 1:
-                    accumulated_data['epoch1'].append(int(data['sample_id']))
-                else:
-                    raise ValueError("Bad epoch")
-        return accumulated_data 
-
+ 
     #------------------------------------
     # output_check
     #-------------------
 
-    def output_check(self, accumulated_samples):
+    def output_check(self, tmpdirname):
         
         epoch0_samples = []
         epoch1_samples = []
         
-        for process_collected_samples in accumulated_samples:
-            # Dict with epoch0 and epoch1 samples
-            # collected by one process:
-            epoch0_samples.extend(process_collected_samples['epoch0'])
-            epoch1_samples.extend(process_collected_samples['epoch1'])
+        for local_rank in self.num_cpus:
+            res_file = os.path.join(tmpdirname, f"_{local_rank}.txt")
+            with open(res_file, 'r') as fd:
+                res_dict_str = fd.read()
+                res_dict = eval(res_dict_str,
+                                {"__builtins__":None},    # No built-ins at all
+                                {}                        # No additional func
+                                )
+                epoch0_samples.extend(res_dict['epoch0'])
+                epoch1_samples.extend(res_dict['epoch1'])
         
         num_samples = len(self.dataloader)
         self.assertEqual(len(epoch0_samples), num_samples)
@@ -189,19 +168,6 @@ class MultiProcessSamperTester(unittest.TestCase):
         self.assertEqual(sorted(epoch0_samples) == range(num_samples))
         self.assertEqual(sorted(epoch1_samples) == range(num_samples))
 
-    #------------------------------------
-    # run_through_samples 
-    #-------------------
-
-#     def run_through_samples(self,node_rank, df):
-#     
-#         for epoch in range(3):
-#             self.dataloader.set_epoch(epoch)
-#             df.loc[f"node{node_rank}"][f"epoch{epoch}"] = []
-#             for res_dict in self.dataloader:
-#                 val = res_dict['tok_ids'][0][0]
-#                 df.loc[f"node{node_rank}"][f"epoch{epoch}"].append(int(val))
-#         return df
 
 
 if __name__ == "__main__":
