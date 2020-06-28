@@ -124,21 +124,23 @@ class MultiProcessSamplerTester(unittest.TestCase):
         if self.num_gpus == 0:
             print("No GPUs on this machine. Skipping distributed sampling test")
 
-        with tempfile.TemporaryDirectory(prefix='Results',dir='/tmp') as tmpdirname:
+        try:
+            tmpdirname = tempfile.TemporaryDirectory(prefix='Results',dir='/tmp')
             for local_rank in range(self.num_gpus):
                 os.environ['LOCAL_RANK'] = f"{local_rank}"
     
                 # Launch processes:
                 completed_process = subprocess.run([self.launch_script_path,
                                                     self.runtime_script,
-                                                    os.path.join(tmpdirname, 
-                                                                 f"result_{local_rank}.txt")
+                                                    tmpdirname
                                                     ])
                 if completed_process.returncode != 0:
                     print("*********Non zero return code from launch")
     
     
-                self.output_check(tmpdirname)
+            self.output_check(tmpdirname)
+        finally:
+            os.removedirs(tmpdirname)
 
  
     #------------------------------------
