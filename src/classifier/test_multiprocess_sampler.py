@@ -150,7 +150,7 @@ class MultiProcessSamplerTester(unittest.TestCase):
         epoch0_samples = []
         epoch1_samples = []
         
-        for local_rank in self.num_cpus:
+        for local_rank in range(self.num_gpus):
             res_file = os.path.join(tmpdirname, f"_{local_rank}.txt")
             with open(res_file, 'r') as fd:
                 res_dict_str = fd.read()

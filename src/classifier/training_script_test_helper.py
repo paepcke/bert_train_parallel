@@ -56,6 +56,8 @@ class TrainProcessTestHelper(object):
         world_size = int(os.environ['WORLD_SIZE'])
         node_rank  = int(os.environ['RANK'])
         local_rank = int(os.environ['LOCAL_RANK'])
+        
+        self.result_file_template = result_file_template
 
         # Creates an OS level process group of all
         # processes that run this script. The nccl
@@ -126,8 +128,11 @@ class TrainProcessTestHelper(object):
             #     }
             samples = self.run(epoch)
             
-
-        #print(self.accumulated_data)
+            res_file_path = os.path.join(self.result_file_template,
+                                         str(local_rank)
+                                        )
+            with open(res_file_path, 'w') as fd:
+                fd.write(str(samples))
 
     #------------------------------------
     # run 
@@ -163,8 +168,6 @@ class TrainProcessTestHelper(object):
                 raise ValueError("Bad epoch")
             
         return accumulated_data
-
-    def check_sampling_correctness(self, accumulated_data):
 
 # ------------------ Main --------------
 
