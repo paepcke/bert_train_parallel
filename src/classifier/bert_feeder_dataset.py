@@ -667,7 +667,13 @@ class SqliteDataset(FrozenDataset):
         # No pending samples from previously
         # found texts longer than sequence_len:
         row = next(self.reader)
-        txt = row[self.text_col_name]
+        try:
+            txt = row[self.text_col_name]
+        except KeyError:
+            msg = f"CSV file does not have col {self.text_col_name}" + '\n' +\
+                    "You can invoke bert_train_parallel.py with --text"
+            self.log.err(msg)
+            raise ValueError(msg)
 
         # Tokenize the text of the row (the ad):
         # If the ad is longer than self.SEQUENCE_LEN,
@@ -693,8 +699,15 @@ class SqliteDataset(FrozenDataset):
         # Add label. Same label even if given text was
         # chopped into multiple rows b/c the text exceeded
         # sequence_len:
-        
-        label = row[self.label_col_name]
+
+        try:        
+            label = row[self.label_col_name]
+        except KeyError:
+            msg = f"CSV file does not have col {self.label_col_name}" + '\n' +\
+                    "You can invoke bert_train_parallel.py with --label"
+            self.log.err(msg)
+            raise ValueError(msg)
+
         try:
             label_encoding = self.label_mapping[label]
         except KeyError:

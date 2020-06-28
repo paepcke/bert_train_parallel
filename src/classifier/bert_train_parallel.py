@@ -192,14 +192,18 @@ class BertTrainer(object):
             self.node_rank  = 0
         #**************
 
-        dataset = SqliteDataset(csv_path,
-                                self.label_encodings,
-                                text_col_name=text_col_name,
-                                label_col_name=label_col_name,
-                                sequence_len=sequence_len,
-                                delete_db=delete_db,
-                                quiet=True if self.gpu_device != self.CPU_DEV else False
-                                )
+        try:
+            dataset = SqliteDataset(csv_path,
+                                    self.label_encodings,
+                                    text_col_name=text_col_name,
+                                    label_col_name=label_col_name,
+                                    sequence_len=sequence_len,
+                                    delete_db=delete_db,
+                                    quiet=True if self.gpu_device != self.CPU_DEV else False
+                                    )
+        except Exception as e:
+            # Not recoverable; error already logged
+            sys.exit(1) 
 
         # Save the label_encodings dict in a db table,
         # but reversed: int-code ==> label-str
