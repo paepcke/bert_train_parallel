@@ -137,7 +137,13 @@ class BertTrainer(object):
         try:
             self.local_rank = int(os.environ['LOCAL_RANK'])
         except KeyError:
-            self.local_rank = None
+            # We were not called via the launch.py script.
+            # Check wether there is at least on 
+            # local GPU, if so, use that:
+            if len(GPUtil.getGPUs()) > 0:
+                self.local_rank = 0
+            else:
+                self.local_rank = None
         
         if logfile is None:
             default_logfile_name = os.path.join(os.path.dirname(__file__), 
