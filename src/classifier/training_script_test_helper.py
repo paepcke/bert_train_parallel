@@ -114,38 +114,6 @@ class TrainProcessTestHelper(object):
                                                     world_size,
                                                     node_rank=node_rank
                                                     )
-        
-        for epoch in range(2):
-            
-            # *MUST* set the distributed dataloader's
-            # epoch variable through the dataloader.
-            # That number is used by the sampler in
-            # all forks as a random seed.
-            
-            self.dataloader.set_epoch(epoch)
-            # Get {'epoch0': [sample10, sample3, ...],
-            #      'epoch1': [sample21, sample12, ...]
-            #     }
-            samples = self.run(epoch)
-            
-            res_file_path = os.path.join(self.result_file_template,
-                                         str(local_rank)
-                                        )
-            with open(res_file_path, 'w') as fd:
-                fd.write(str(samples))
-
-    #------------------------------------
-    # run 
-    #-------------------
-
-    def run(self, epoch):
-        '''
-        Ask for all the samples in a loop
-        Write the result to a file as a dict
-        
-        @param epoch:
-        @type epoch:
-        '''
 
         # Place for this process to collect the
         # samples drawn. Each process only draws
@@ -157,6 +125,44 @@ class TrainProcessTestHelper(object):
                             'epoch1' : []
                             }
 
+        for epoch in range(2):
+            
+            # *MUST* set the distributed dataloader's
+            # epoch variable through the dataloader.
+            # That number is used by the sampler in
+            # all forks as a random seed.
+            
+            self.dataloader.set_epoch(epoch)
+
+            # Get {'epoch0': [sample10, sample3, ...],
+            #      'epoch1': [sample21, sample12, ...]
+            #     }
+
+            samples = self.run(epoch, accumulated_data)
+            
+            res_file_path = os.path.join(self.result_file_template,
+                                         'result'+str(local_rank)
+                                        )
+
+        #************
+        #print(f"***Samples local_rank {local_rank}: {samples}")
+        #************
+
+        with open(res_file_path, 'w') as fd:
+            fd.write(str(samples))
+
+    #------------------------------------
+    # run 
+    #-------------------
+
+    def run(self, epoch, accumulated_data):
+        '''
+        Ask for all the samples in a loop
+        Write the result to a file as a dict
+        
+        @param epoch:
+        @type epoch:
+        '''
         for data in self.dataloader:
             if epoch == 0:
                 # Even the sample_id comes back as

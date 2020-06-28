@@ -9,12 +9,9 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+import shutil
 
 import GPUtil
-
-from bert_feeder_dataloader import MultiprocessingDataloader
-from bert_feeder_dataset import SqliteDataset
-
 
 #*******
 # The following is a workaround for some library
@@ -28,7 +25,10 @@ os.environ['MKL_THREADING_LAYER'] = 'gnu'
 TEST_ALL = False
 
 class MultiProcessSamplerTester(unittest.TestCase):
-    
+
+    # Number of samples we'll put into the test db:
+    num_samples = 24
+  
     test_db_path = os.path.join(os.path.dirname(__file__), 'datasets/test_db.sqlite')
     launch_script_path = os.path.join(os.path.dirname(__file__), 'launch.py')
     runtime_script     = os.path.join(os.path.dirname(__file__), 'training_script_test_helper.py')
@@ -59,8 +59,8 @@ class MultiProcessSamplerTester(unittest.TestCase):
                                                 )
 
                                                ''')
-        # 20 samples:
-        for serial_num in range(24):
+        # Insert the samples:
+        for serial_num in range(cls.num_samples):
             cls.db.execute(f'''INSERT INTO Samples
                             VALUES({serial_num},
                                    "[{serial_num+1}]",
@@ -125,24 +125,20 @@ class MultiProcessSamplerTester(unittest.TestCase):
             print("No GPUs on this machine. Skipping distributed sampling test")
 
         try:
-            tmpdirname = tempfile.TemporaryDirectory(prefix='Results',dir='/tmp')
-            for local_rank in range(self.num_gpus):
-                os.environ['LOCAL_RANK'] = f"{local_rank}"
-    
-                # Launch processes:
-                completed_process = subprocess.run([self.launch_script_path,
-                                                    self.runtime_script,
-                                                    tmpdirname
-                                                    ])
-                if completed_process.returncode != 0:
-                    print("*********Non zero return code from launch")
-    
-    
+            tmpdirname = tempfile.TemporaryDirectory(prefix='Results',dir='/tmp').name
+            os.mkdir(tmpdirname)
+            # Launch processes:
+            completed_process = subprocess.run([self.launch_script_path,
+                                                self.runtime_script,
+                                                tmpdirname
+                                                ])
+            if completed_process.returncode != 0:
+                print("*********Non zero return code from launch")
+
             self.output_check(tmpdirname)
         finally:
-            os.removedirs(tmpdirname)
+            shutil.rmtree(tmpdirname)
 
- 
     #------------------------------------
     # output_check
     #-------------------
@@ -153,24 +149,31 @@ class MultiProcessSamplerTester(unittest.TestCase):
         epoch1_samples = []
         
         for local_rank in range(self.num_gpus):
-            res_file = os.path.join(tmpdirname, f"_{local_rank}.txt")
+            res_file = os.path.join(tmpdirname, 'result'+str(local_rank))
             with open(res_file, 'r') as fd:
                 res_dict_str = fd.read()
                 res_dict = eval(res_dict_str,
                                 {"__builtins__":None},    # No built-ins at all
                                 {}                        # No additional func
                                 )
+                #********
+                #print(f"***res_dict: {res_dict}")
+                #********
                 epoch0_samples.extend(res_dict['epoch0'])
                 epoch1_samples.extend(res_dict['epoch1'])
+
+        #*********
+        #print(f"***epoch0: {epoch0_samples}")
+        #print(f"***epoch1: {epoch1_samples}")
+        #*********                
+                
+        self.assertEqual(len(epoch0_samples), self.num_samples)
+        self.assertEqual(len(epoch1_samples), self.num_samples)
+
+        self.assertNotEqual(epoch0_samples, epoch1_samples)
         
-        num_samples = len(self.dataloader)
-        self.assertEqual(len(epoch0_samples), num_samples)
-        self.assertEqual(len(epoch1_samples), num_samples)
-        self.assertEqual(epoch0_samples, epoch1_samples)
-        self.assertEqual(sorted(epoch0_samples) == range(num_samples))
-        self.assertEqual(sorted(epoch1_samples) == range(num_samples))
-
-
+        self.assertEqual(sorted(epoch0_samples), list(range(self.num_samples)))
+        self.assertEqual(sorted(epoch1_samples), list(range(self.num_samples)))
 
 if __name__ == "__main__":
     #import sys;sys.argv = ['', 'Test.testName']
