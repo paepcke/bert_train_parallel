@@ -112,7 +112,7 @@ class BertTrainer(object):
     #-------------------
 
     def __init__(self,
-                 csv_path,
+                 csv_or_sqlite_path,
                  model_save_path=None,
                  text_col_name='text',
                  label_col_name='label',
@@ -185,17 +185,20 @@ class BertTrainer(object):
             try:
                 self.node_rank = int(os.environ['RANK'])
                 self.world_size = int(os.environ['WORLD_SIZE'])
+                self.master_addr = os.environ['MASTER_ADDR']
+                self.master_port = os.environ['MASTER_PORT']
             except KeyError as e:
-                msg = (f"Environment variable {e.args[0]} not set.\n" 
-                       "Both RANK and WORLD_SIZE must be set.\n"
-                        "Maybe use launch.py to run this script?"
+                msg = (f"\nEnvironment variable {e.args[0]} not set.\n" 
+                       "RANK, WORLD_SIZE, MASTER_ADDR, and MASTER_PORT\n"
+                       "must be set.\n"
+                       "Maybe use launch.py to run this script?"
                         )
                 raise TrainError(msg)
             
             self.init_multiprocessing()
 
         if model_save_path is None:
-            (csv_file_root, _ext) = os.path.splitext(csv_path)
+            (csv_file_root, _ext) = os.path.splitext(csv_or_sqlite_path)
             model_save_path = csv_file_root + '_trained_model' + '.sav'
         # Preparation:
         #**************
@@ -207,7 +210,7 @@ class BertTrainer(object):
         #**************
 
         try:
-            dataset = SqliteDataset(csv_path,
+            dataset = SqliteDataset(csv_or_sqlite_path,
                                     self.label_encodings,
                                     text_col_name=text_col_name,
                                     label_col_name=label_col_name,
@@ -1175,76 +1178,6 @@ class BertTrainer(object):
              }
             )
 
-# -------------------- Launch Function ----------------
-        
-#------------------------------------
-# launch_trainer 
-#-------------------
-
-def launch_trainer(process_indx, argparse_args):
-    '''
-    Called by the torch.multiprocessing.spawn()
-    function each time a process is forked to 
-    operated one of this machine's GPUs. The
-    process_indx provides an index into the 
-    processes, increasing with each call.
-    
-    The argsparse_args must contain at least
-    the following:
-    
-        gpus       : the number of GPUs to use
-                     on this machine
-        world_size : the number of GPUs used across
-                     all machines
-        nr         : the 'rank' of this node 
-                     (a.k.a. machine). Rank is
-                     just a number assigned to each
-                     participating machine. That
-                     assignment is done manually by the user
-                     when they start this script on
-                     each node. 
-    
-    Any remaining argparse args are passed to the entry
-    point of the process being forked.
-    
-    This function must be at top level of its module. 
-    
-    @param process_indx:
-    @type process_indx:
-    @param argparse_args:
-    @type argparse_args:
-    '''
-    
-    # argparse_args is named for clarity. For
-    # brevity:
-    args = argparse_args
-    # Total number of GPUs (to use) on this node:
-    BertTrainer.gpus = args.gpus
-    # Total number of GPUs on all machines (nodes): 
-    BertTrainer.world_size = args.world_size
-    
-    # Rank of this node among all the nodes 
-    # that will be involved in the computations:
-    BertTrainer.node_rank = args.nr
-    
-    # The how manyeth time this function is called.
-    # Used in init_process_group() to determine who
-    # is the first (process 0), and therefore needs
-    # to init the group
-    BertTrainer.process_indx = process_indx
-    
-    _pa = BertTrainer(args.csv_path,
-                     text_col_name=args.text,
-                     label_col_name=args.labels,
-                     #*********
-                     epochs=1,
-                     #*********
-                     learning_rate=2e-5,
-                     batch_size=32,
-                     logfile=args.logfile,
-                     delete_db=args.deletedb
-                     )
-
 # -------------------- Main ----------------
 if __name__ == '__main__':
 
@@ -1267,13 +1200,6 @@ if __name__ == '__main__':
                         help="name of column with the true labels (default: 'label')",
                         default='label'
                         )
-    parser.add_argument('-d', '--deletedb',
-                        help="delete current Sqlite db, which contains the CSV content.\n\
-                        If deleted, CSV file will be parsed again, else delete/use will \n\
-                        be solicited on the command line.",
-                        action='store_true',
-                        default=False
-                        )
     
     #************
 #     parser.add_argument('-n', '--nodes', default=1,
@@ -1284,27 +1210,11 @@ if __name__ == '__main__':
 #                         help='ranking within the nodes')
     #************    
 
-    parser.add_argument('csv_path',
-                        help='path to csv file to process')
+    parser.add_argument('data_source_path',
+                        help='path to csv or sqlite file to process')
 
     args = parser.parse_args();
-
-    #**********
-    #args.csv_path = os.path.join(data_dir, "facebook_ads_clean.csv")
-    #args.text = 'text'
-    #args.labels = 'leaning'
-    #args.deletedb=False
-    #**********
-    
-    #**********
-    #args.deletedb = True
-    # set PyTorch distributed related environmental variables
-#     os.environ["MASTER_ADDR"] = '127.0.0.1'
-#     os.environ["MASTER_PORT"] = str(29500)
-#     os.environ["WORLD_SIZE"] = str(3)
-#     os.environ["RANK"] = str(0)
-    #**********
-    _pa = BertTrainer(args.csv_path,
+    _pa = BertTrainer(args.data_source_path,
                      text_col_name=args.text,
                      label_col_name=args.labels,
                      #*********

@@ -215,14 +215,11 @@ class SqliteDataset(FrozenDataset):
     #-------------------
 
     def __init__(self,
-                 csv_path,
+                 csv_or_sqlite_path,
                  label_mapping,
-                 sqlite_path=None,
                  sequence_len=None,
                  text_col_name=None,
                  label_col_name=None,
-                 quiet=False,
-                 delete_db=None
                  ):
         '''
         A dataset for the context of Bert training.        
@@ -324,52 +321,31 @@ class SqliteDataset(FrozenDataset):
             self.text_col_name = text_col_name
 
         self.label_mapping = label_mapping
-            
-        if sqlite_path is None:
-            (file_path, _ext) = os.path.splitext(csv_path)
-            sqlite_path = file_path + '.sqlite'
 
-        db_exists = os.path.exists(sqlite_path)
-        csv_file_exists = os.path.exists(csv_path)
-        # If neither the csv file nor a full sqlite db
-        # exist: scold the user:
-        if not db_exists and not csv_file_exists:
-            raise IOError(f"Neither csv path, nor equivalent Sqlite db file exist.")
-                
-        # Ask user about fate of the existing sqlite db?
-        if quiet: 
-            if db_exists:
-                use_db = True
-            else:
-                use_db = False
-        else:
-            # Requested to interact with user if appropriate:
-            if db_exists:
-                if delete_db is None:
-                    # Ask user whether to delete db:
-                    delete_db = self.query_yes_no("Sqlite db exists; delete?", 'no')
-                if delete_db:
-                    os.remove(sqlite_path)
-                else:
-                    # Don't delete, but use it instead of
-                    # parsing the CSV file?
-                    use_db = self.query_yes_no("OK, not deleting database; use it instead of CSV file?",
-                                           'no')
-            
-        # Check that we didn't delete the db in the above:
-        if os.path.exists(sqlite_path) and use_db:
-            self.log.info(f"Using existing db {sqlite_path} (not raw csv)")
-            self.db = sqlite3.connect(sqlite_path)
-            self.db.row_factory = sqlite3.Row
-        else:
+        if not os.path.exists(csv_or_sqlite_path):
+            raise IOError(f"Data source {csv_or_sqlite_path} does not exist.")
+        
+        is_csv_source = csv_or_sqlite_path.endswith('.csv')
+        
+        if is_csv_source:
+            # Remove any existing sqlite db that goes
+            # with this CSV file:
+            (file_path, _ext) = os.path.splitext(csv_or_sqlite_path)
+            sqlite_path = file_path + '.sqlite'
+            if os.path.exists(sqlite_path):
+                os.remove(sqlite_path)
             # Fill the sqlite db with records, each
             # containing sample_id, toc_ids, label, attention_mask.
-            self.db = self.process_csv_file(csv_path,
+            self.db = self.process_csv_file(csv_or_sqlite_path,
                                             sqlite_path, 
                                             sequence_len,
                                             text_col_name,
                                             label_col_name
                                             )
+                
+        else:
+            self.db = sqlite3.connect(csv_or_sqlite_path)
+            self.db.row_factory = sqlite3.Row
 
         num_samples_row = next(self.db.execute('''SELECT COUNT(*) AS num_samples from Samples'''))
         num_samples = num_samples_row['num_samples']
