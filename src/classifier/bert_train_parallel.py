@@ -122,7 +122,7 @@ class BertTrainer(object):
                  learning_rate=3e-5,
                  label_encodings=None,
                  logfile=None,
-                 delete_db=False,
+                 started_from_launch=False,
                  testing_cuda_on_cpu=False
                  ):
         '''
@@ -187,6 +187,23 @@ class BertTrainer(object):
                 self.world_size = int(os.environ['WORLD_SIZE'])
                 self.master_addr = os.environ['MASTER_ADDR']
                 self.master_port = os.environ['MASTER_PORT']
+                # If this script was launched manually, rather
+                # than through the launch.py, and WORLD_SIZE is
+                # greater than 1, the init_process_group() call
+                # later on will hang, waiting for the remaining
+                # sister processes. Therefore: if launched manually,
+                # set WORLD_SIZE to 1, and RANK to 0:
+                if not started_from_launch:
+                    self.log.info(("Setting RANK to 0, and WORLD_SIZE to 1,\n"
+                                   "b/c script was not started using launch.py()"
+                                   ))
+                    os.environ['RANK'] = '0'
+                    os.environ['WORLD_SIZE'] = '1'
+                    os.environ['MASTER_ADDR'] = '127.0.0.1'
+                    self.node_rank  = 0
+                    self.world_size = 1
+                    self.master_addr = '127.0.0.1'
+                    
             except KeyError as e:
                 msg = (f"\nEnvironment variable {e.args[0]} not set.\n" 
                        "RANK, WORLD_SIZE, MASTER_ADDR, and MASTER_PORT\n"
@@ -215,8 +232,6 @@ class BertTrainer(object):
                                     text_col_name=text_col_name,
                                     label_col_name=label_col_name,
                                     sequence_len=sequence_len,
-                                    delete_db=delete_db,
-                                    quiet=True if self.gpu_device != self.CPU_DEV else False
                                     )
         except Exception as e:
             # Not recoverable; error already logged
@@ -1200,6 +1215,11 @@ if __name__ == '__main__':
                         help="name of column with the true labels (default: 'label')",
                         default='label'
                         )
+    parser.add_argument('--started_from_launch',
+                        action='store_true',
+                        help="Use only by launch.py script! Indicate that script started via launch.py",
+                        default=False
+                        )
     
     #************
 #     parser.add_argument('-n', '--nodes', default=1,
@@ -1223,7 +1243,6 @@ if __name__ == '__main__':
                      learning_rate=2e-5,
                      batch_size=32,
                      logfile=args.logfile,
-                     delete_db=args.deletedb,
                      testing_cuda_on_cpu=False
                      )
          

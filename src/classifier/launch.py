@@ -247,7 +247,7 @@ def main():
 
         cmd.append(args.training_script)
 
-        cmd.extend(args.training_script_args)
+        cmd.extend(args.training_script_args.append('--started_from_launch'))
 
         process = subprocess.Popen(cmd, env=current_env)
         processes.append(process)

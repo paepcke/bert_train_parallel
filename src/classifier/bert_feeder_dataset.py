@@ -646,8 +646,11 @@ class SqliteDataset(FrozenDataset):
         try:
             txt = row[self.text_col_name]
         except KeyError:
-            msg = f"CSV file does not have col {self.text_col_name}" + '\n' +\
-                    "You can invoke bert_train_parallel.py with --text"
+            msg = (f"\nCSV file does not have a column named '{self.text_col_name}'\n"
+                    "You can invoke bert_train_parallel.py with --text\n"
+                    "to specify col name for text, and --label to speciy\n"
+                    "name of label column."
+                    )
             self.log.err(msg)
             raise ValueError(msg)
 
