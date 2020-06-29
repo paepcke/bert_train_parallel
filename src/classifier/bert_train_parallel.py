@@ -182,8 +182,16 @@ class BertTrainer(object):
             # to use.
             # Internalize the promised env vars RANK and
             # WORLD_SIZE:
-            self.node_rank = int(os.environ['RANK'])
-            self.world_size = int(os.environ['WORLD_SIZE'])
+            try:
+                self.node_rank = int(os.environ['RANK'])
+                self.world_size = int(os.environ['WORLD_SIZE'])
+            except KeyError as e:
+                msg = (f"Environment variable {e.args[0]} not set.\n" 
+                       "Both RANK and WORLD_SIZE must be set.\n"
+                        "Maybe use launch.py to run this script?"
+                        )
+                raise TrainError(msg)
+            
             self.init_multiprocessing()
 
         if model_save_path is None:
