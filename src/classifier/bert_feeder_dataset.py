@@ -72,7 +72,7 @@ class FrozenDataset(Dataset):
 
         # Replenish the requested queue
 
-        self.queue = self.saved_queue
+        self.queue = self.saved_queue.copy()
 
 # ---------------------- Utilities ---------------
 
@@ -535,11 +535,13 @@ class SqliteDataset(FrozenDataset):
                     # already wrote an error msg. Keep going
                     continue
                 insert_cmd = f'''
-                           INSERT INTO Samples (tok_ids, 
+                           INSERT INTO Samples (sample_id,
+                                                tok_ids, 
                                                 attention_mask, 
                                                 label
                                                 ) 
                             VALUES (
+                              {num_processed},
                               '{str(row_dict['tok_ids'])}',
                               '{str(row_dict['attention_mask'])}',
                               {row_dict['label']}

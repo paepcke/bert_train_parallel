@@ -265,7 +265,7 @@ class BertTrainer(object):
                                                    batch_size=self.batch_size
                                                    )
                                                          
-            self.test_dataloader = SqliteDataLoader(dataset.validate_frozen_dataset,
+            self.test_dataloader = SqliteDataLoader(dataset.test_frozen_dataset,
                                                     batch_size=self.batch_size
                                                     )
             
@@ -643,7 +643,7 @@ class BertTrainer(object):
             # For each batch of training data...
             # Tell data loader to pull from the train sample queue,
             # starting over:
-            self.train_dataloader.reset_split()
+            self.train_dataloader.reset()
             try:
                 for sample_counter, batch in enumerate(self.train_dataloader):
 
@@ -799,7 +799,7 @@ class BertTrainer(object):
             #nb_eval_steps = 0
         
             # Start feeding validation set from the beginning:
-            self.val_dataloader.reset_split()
+            self.val_dataloader.reset()
             # Evaluate data for one epoch
             for batch in self.val_dataloader:
                 
@@ -932,6 +932,7 @@ class BertTrainer(object):
             if self.gpu_device != self.CPU_DEV:
                 logits = logits.to('cpu')
                 b_labels = b_labels.to('cpu')
+                loss.to('cpu')
                 cuda.empty_cache()
 
             # Get the class prediction from the 
