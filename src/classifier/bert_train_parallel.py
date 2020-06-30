@@ -750,12 +750,6 @@ class BertTrainer(object):
                     # modified based on their gradients, the learning rate, etc.
                     
                     self.optimizer.step()
-                    
-                    # Note GPU usage:
-                    if self.gpu_device != self.CPU_DEV:
-                        cuda.empty_cache()
-                        self.history_checkpoint(epoch_i, sample_counter,'post_optimizer')
-                        
                     # Update the learning rate.
                     self.scheduler.step()
 
