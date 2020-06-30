@@ -117,7 +117,10 @@ class BertTrainer(object):
                  text_col_name='text',
                  label_col_name='label',
                  epochs=4,
-                 batch_size=32,
+                 #*******
+                 #batch_size=32,
+                 batch_size=2,
+                 #*******
                  sequence_len=128,
                  learning_rate=3e-5,
                  label_encodings=None,
@@ -265,7 +268,7 @@ class BertTrainer(object):
                                                    batch_size=self.batch_size
                                                    )
                                                          
-            self.test_dataloader = SqliteDataLoader(dataset.test_frozen_dataset,
+            self.test_dataloader = SqliteDataLoader(dataset.validate_frozen_dataset,
                                                     batch_size=self.batch_size
                                                     )
             
@@ -336,10 +339,12 @@ class BertTrainer(object):
     #-------------------
 
     def init_multiprocessing(self):
+        self.log.info("Awaiting master node's response...")
         dist.init_process_group(
             backend='nccl',
             init_method='env://'
         )
+        self.log.info("And we're off!")
 
     #------------------------------------
     # enable_GPU 
@@ -750,6 +755,12 @@ class BertTrainer(object):
                     # modified based on their gradients, the learning rate, etc.
                     
                     self.optimizer.step()
+                    
+                    # Note GPU usage:
+                    if self.gpu_device != self.CPU_DEV:
+                        cuda.empty_cache()
+                        self.history_checkpoint(epoch_i, sample_counter,'post_optimizer')
+                        
                     # Update the learning rate.
                     self.scheduler.step()
 
@@ -834,9 +845,9 @@ class BertTrainer(object):
                     total_val_loss += val_loss.item()
 
                 if self.gpu_device != self.CPU_DEV:
-                    logits = logits.to('cpu')
-                    val_loss = val_loss.to('cpu')
-                    b_labels = b_labels.to('cpu')
+                    logits.cpu()
+                    val_loss.cpu()
+                    b_labels.cpu()
                 try:
                     total_val_accuracy += self.accuracy(logits, b_labels)
                 except TrainError as e:
@@ -898,7 +909,21 @@ class BertTrainer(object):
         # Predict
         # Batches come as dicts with keys
         # sample_id, tok_ids, label, attention_mask: 
-        for batch in self.test_dataloader:
+        #**********
+        print(f"***len(self.test_dataloader): {len(self.test_dataloader)}")
+        self.test_dataloader.reset()
+        #**********
+
+        #**********        
+        # for batch in self.test_dataloader:
+        for i in range(10):
+            batch = self.test_dataloader[i]
+        #**********          
+
+            #**********
+            print(f"***batch: {batch}")
+            #**********            
+              
             if self.gpu_device == self.CPU_DEV:
                 b_input_ids = batch['tok_ids']
                 b_input_mask = batch['attention_mask']
@@ -924,9 +949,9 @@ class BertTrainer(object):
             # Move logits and labels to CPU, if the
             # are not already:
             if self.gpu_device != self.CPU_DEV:
-                logits   = logits.to('cpu')
+                logits = logits.to('cpu')
                 b_labels = b_labels.to('cpu')
-                loss     = loss.to('cpu')
+                loss.to('cpu')
                 cuda.empty_cache()
 
             # Get the class prediction from the 
@@ -1215,6 +1240,15 @@ if __name__ == '__main__':
                         help="Use only by launch.py script! Indicate that script started via launch.py",
                         default=False
                         )
+    
+    #************
+#     parser.add_argument('-n', '--nodes', default=1,
+#                         type=int, metavar='N')
+#     parser.add_argument('-g', '--gpus', default=1, type=int,
+#                         help='number of gpus per node')
+#     parser.add_argument('-nr', '--nr', default=0, type=int,
+#                         help='ranking within the nodes')
+    #************    
 
     parser.add_argument('data_source_path',
                         help='path to csv or sqlite file to process')
@@ -1229,6 +1263,7 @@ if __name__ == '__main__':
                      learning_rate=2e-5,
                      batch_size=32,
                      logfile=args.logfile,
-                     started_from_launch=args.started_from_launch,
                      testing_cuda_on_cpu=False
                      )
+         
+    
