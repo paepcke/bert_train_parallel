@@ -2,6 +2,7 @@
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 from argparse import ArgumentParser, REMAINDER
+import json
 import os
 import re
 import socket
@@ -9,6 +10,7 @@ import subprocess
 import sys
 
 import GPUtil
+from json.decoder import JSONDecodeError
 
 
 r"""
@@ -152,6 +154,71 @@ will not pass ``--local_rank`` when you specify this flag.
 
 num_gpus_here = len(GPUtil.getGPUs())
 
+def parse_world_layout_config(other_gpu_config_file, world_layout):  # @UnusedVariable
+    '''
+    Parse JSON config file that describes how many
+    GPUs different machines have. Expect any entries
+    like:
+    
+       {"foo.bar.com" : 4,
+        "127.0.0.1"   : 5,
+        "localhost"   : 3,
+        "172.12.145.1 : 6
+       }
+
+    Ensures there is an entry for 
+    "localhost"
+    
+    @param other_gpu_config_file:
+    @type other_gpu_config_file:
+    @param world_layout:
+    @type world_layout:
+    '''
+    try:
+        with open(other_gpu_config_file, 'r') as config_fd:
+            config_dict = json.load(config_fd)
+    except FileNotFoundError:
+        print(f"Could not find or open config file {other_gpu_config_file}")
+        sys.exit(1)
+    except JSONDecodeError as e:
+        print(f"Bad JSON in config file {other_gpu_config_file}: {repr(e)}")
+        sys.exit(1)
+
+    # Ensure that this machine's node entry is
+    # 'localhost'. It is legal in the config file
+    # to use 'localhost', '127.0.0.1', or the hostname's FQDN as
+    # key in the config file for local host.
+    # Get name of this machine. 
+    my_hostname = socket.gethostname().split('.')[0]
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.connect(("google.com",80))
+    
+    # Get something like ('172.24.75.114', 44572)  
+    my_global_ip_addr = s.getsockname()[0] 
+
+    # Find whether some version of this host
+    # is referenced in the dict; if it's anything
+    # other than 'localhost', replace the entry
+    # with 'lcoalhost' as key:
+    for node_name_or_addr in config_dict.copy().keys():
+        if node_name_or_addr   == '127.0.0.1' or\
+            node_name_or_addr.split('.')[0] == my_hostname or\
+            node_name_or_addr  == my_global_ip_addr:
+            
+            config_dict['localhost'] = config_dict[node_name_or_addr]
+            del config_dict[node_name_or_addr]
+
+    if 'localhost' not in config_dict.keys():
+        config_dict['localhost'] = len(GPUtil.getGPUs())
+
+    # Values should all be ints: number of GPUs:
+    for (node, num_gpus) in config_dict.items():
+        if type(num_gpus) != int:
+            print(f"Number of GPUs at node {node} in config file {other_gpu_config_file} should be an int.")
+            sys.exit(1)
+
+    return config_dict
+
 def parse_args():
     """
     Helper function parsing the command line options
@@ -163,14 +230,21 @@ def parse_args():
 
     # Optional arguments for the launch helper
 
-    parser.add_argument("--node_rank", type=int, default=0,
-                        help="this machine's index into the number of machines (0 is the master);"
-                             "default: 0"
+    parser.add_argument("--node_rank", 
+                        type=int, 
+                        default=0,
+                        help=("this machine's index into the number of machines (0 is the master); "
+                              "default: 0"
                               )
-    parser.add_argument("--nother_gpus", type=int, default=0,
-                        help="Total number of GPUs used on other nodes; default: 0",
+                       )
+    parser.add_argument("--other_gpus",
+                        default=0,
+                        help=("either: path to GPU global-config file, or total\n"
+                              "number of GPUs used on other nodes; default: 0"
                               )
-    parser.add_argument("--nhere_gpus", type=int,
+                        )
+    parser.add_argument("--here_gpus", 
+                        type=int,
                         help=f"number of GPUs to use on this node; default is all: {num_gpus_here}",
                         default=num_gpus_here
                         )
@@ -207,12 +281,44 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # world size in terms of number of processes, which is
-    # equal to number of GPUs used on all machines together.
-    # Number of GPUs used on the other nodes, plus the ones
-    # used on this machine:
+    # world size is number of processes, which is
+    # equal to number of GPUs used on all machines with
+    # lower node rank than this one, plus this node's GPUs.
+    # If args.other_gpus is an int, we assume that 
+    # all machines have the same number of GPUs. 
+    # Else the arg is the path to a config file
+    # that lays out which node is to use how many 
+    # of its GPUs.
     
-    dist_world_size = args.nother_gpus + args.nhere_gpus
+    other_gpus = args.other_gpus
+    here_gpus  = args.here_gpus
+    node_rank  = args.node_rank
+    world_layout = {}
+    try:
+        other_gpus   = int(other_gpus)
+    except:
+        # other_gpus is path to world layout
+        # config file.
+        pass
+    
+    if type(other_gpus) == int:
+        # Every node (machine) has same number of args:
+        # Account for all nodes that came before this one.
+        # We could just lump those together as:
+        #    other_gpus * node_rank
+        # but enumerating them matches what would be
+        # in a config file if it was used:
+        for prev_node_rank in range(node_rank):
+            world_layout[prev_node_rank] = other_gpus
+        world_layout['localhost'] = here_gpus
+    else:
+        # Unequal number of GPUs used in various
+        # machines. Parse the config file, filling
+        # in world_layout with each prior node's 
+        # number of GPUs.
+        world_layout = parse_world_layout_config(other_gpus, world_layout)
+    
+    dist_world_size = sum(world_layout.values())
     #dist_world_size = args.nproc_per_node * args.nnodes
 
     # If host name was provided instead of an
@@ -232,7 +338,7 @@ def main():
     
     processes = []
 
-    if 'OMP_NUM_THREADS' not in os.environ and args.nhere_gpus > 1:
+    if 'OMP_NUM_THREADS' not in os.environ and args.here_gpus > 1:
         current_env["OMP_NUM_THREADS"] = str(1)
         print("*****************************************\n"
               "Setting OMP_NUM_THREADS environment variable for each process "
@@ -241,17 +347,20 @@ def main():
               "your application as needed. \n"
               "*****************************************".format(current_env["OMP_NUM_THREADS"]))
 
+    # All GPUs in lower ranked nodes (i.e. exclusive
+    # the ones in this node:
+    other_gpus =  sum([num_gpus for (node_name, num_gpus) 
+                       in world_layout.items() 
+                       if node_name != 'localhost']) 
+
     # Compute a unique number for each GPU within
     # the group of nodes (machines). Starting with
     # the master node, whose numbers are 0,1,...<ngpus_here>:
     
-    for local_rank in range(0, args.nhere_gpus):
+    for local_rank in range(0, world_layout['localhost']):
 
-        # To ensure no dups in the global GPU ids, 
-        # assume every node has as many GPUs as the
-        # all nodes taken together:
-        
-        dist_rank = dist_world_size * args.node_rank + local_rank
+        dist_rank = other_gpus + local_rank
+
         current_env["RANK"] = str(dist_rank)
         current_env["LOCAL_RANK"] = str(local_rank)
 
@@ -278,7 +387,6 @@ def main():
         process = subprocess.Popen(cmd, env=current_env)
         processes.append(process)
 
-    #***********
     print(f"********Num processes launched: {len(processes)}")
     #***********        
     for process in processes:
