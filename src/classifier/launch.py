@@ -363,13 +363,13 @@ def main():
     # the group of nodes (machines). Starting with
     # the master node, whose numbers are 0,1,...<ngpus_here>:
 
-    current_env['NODE_RANK'] = args.node_rank
+    current_env['NODE_RANK'] = str(args.node_rank)
     
     for local_rank in range(0, world_layout['localhost']):
 
         dist_rank = other_gpus * args.node_rank + local_rank
 
-        current_env["DIST_RANK"] = str(dist_rank)
+        current_env["RANK"] = str(dist_rank)
         current_env["LOCAL_RANK"] = str(local_rank)
 
         # spawn the processes
@@ -406,16 +406,5 @@ def main():
             raise subprocess.CalledProcessError(returncode=process.returncode,
                                                 cmd=cmd)
 
-
 if __name__ == "__main__":
-    #**********
-    # try:
-    #   os.remove('/tmp/epoch0.output')
-    # except FileNotFoundError:
-    #   pass
-    # try:
-    #     os.remove('/tmp/epoch1.output')
-    # except FileNotFoundError:
-    #   pass
-    #**********  
     main()

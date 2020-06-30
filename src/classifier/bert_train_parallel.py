@@ -187,7 +187,6 @@ class BertTrainer(object):
             # WORLD_SIZE:
             try:
                 self.node_rank = int(os.environ['NODE_RANK'])
-                self.dist_rank = int(os.environ['DIST_RANK'])
                 self.world_size = int(os.environ['WORLD_SIZE'])
                 self.master_addr = os.environ['MASTER_ADDR']
                 self.master_port = os.environ['MASTER_PORT']
@@ -1232,15 +1231,6 @@ if __name__ == '__main__':
                         help="Use only by launch.py script! Indicate that script started via launch.py",
                         default=False
                         )
-    
-    #************
-#     parser.add_argument('-n', '--nodes', default=1,
-#                         type=int, metavar='N')
-#     parser.add_argument('-g', '--gpus', default=1, type=int,
-#                         help='number of gpus per node')
-#     parser.add_argument('-nr', '--nr', default=0, type=int,
-#                         help='ranking within the nodes')
-    #************    
 
     parser.add_argument('data_source_path',
                         help='path to csv or sqlite file to process')
