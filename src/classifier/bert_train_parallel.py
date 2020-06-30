@@ -909,21 +909,9 @@ class BertTrainer(object):
         # Predict
         # Batches come as dicts with keys
         # sample_id, tok_ids, label, attention_mask: 
-        #**********
-        print(f"***len(self.test_dataloader): {len(self.test_dataloader)}")
-        self.test_dataloader.reset()
-        #**********
 
-        #**********        
-        # for batch in self.test_dataloader:
-        for i in range(10):
-            batch = self.test_dataloader[i]
-        #**********          
-
-            #**********
-            print(f"***batch: {batch}")
-            #**********            
-              
+        for batch in self.test_dataloader:
+             
             if self.gpu_device == self.CPU_DEV:
                 b_input_ids = batch['tok_ids']
                 b_input_mask = batch['attention_mask']
