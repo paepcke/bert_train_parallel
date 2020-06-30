@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import absolute_import, division, print_function, unicode_literals
 
+from argparse import ArgumentParser, REMAINDER
+import os
+import re
+import socket
+import subprocess
+import sys
+
+import GPUtil
+
 
 r"""
 `torch.distributed.launch` is a module that spawns up multiple distributed
@@ -140,11 +149,6 @@ will not pass ``--local_rank`` when you specify this flag.
 """
 
 
-import sys
-import subprocess
-import os
-from argparse import ArgumentParser, REMAINDER
-import GPUtil
 
 num_gpus_here = len(GPUtil.getGPUs())
 
@@ -211,12 +215,21 @@ def main():
     dist_world_size = args.nother_gpus + args.nhere_gpus
     #dist_world_size = args.nproc_per_node * args.nnodes
 
+    # If host name was provided instead of an
+    # IP address, resolve that:
+    if re.search('^[\d.]*$', args.master_addr) is None:
+        # Got not an IP address, but something
+        # with letters:
+        master_addr = socket.gethostbyname(args.master_addr)
+    else:
+        master_addr = args.master_addr 
+
     # set PyTorch distributed related environmental variables
     current_env = os.environ.copy()
-    current_env["MASTER_ADDR"] = args.master_addr
+    current_env["MASTER_ADDR"] = master_addr
     current_env["MASTER_PORT"] = str(args.master_port)
     current_env["WORLD_SIZE"] = str(dist_world_size)
-
+    
     processes = []
 
     if 'OMP_NUM_THREADS' not in os.environ and args.nhere_gpus > 1:
@@ -228,9 +241,17 @@ def main():
               "your application as needed. \n"
               "*****************************************".format(current_env["OMP_NUM_THREADS"]))
 
+    # Compute a unique number for each GPU within
+    # the group of nodes (machines). Starting with
+    # the master node, whose numbers are 0,1,...<ngpus_here>:
+    
     for local_rank in range(0, args.nhere_gpus):
-        # each process's rank in terms of GPUs:
-        dist_rank = args.nother_gpus + local_rank
+
+        # To ensure no dups in the global GPU ids, 
+        # assume every node has as many GPUs as the
+        # all nodes taken together:
+        
+        dist_rank = dist_world_size * args.node_rank + local_rank
         current_env["RANK"] = str(dist_rank)
         current_env["LOCAL_RANK"] = str(local_rank)
 
