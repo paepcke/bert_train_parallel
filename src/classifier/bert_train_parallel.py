@@ -1251,6 +1251,7 @@ if __name__ == '__main__':
                      learning_rate=2e-5,
                      batch_size=32,
                      logfile=args.logfile,
+                     started_from_launch=args.started_from_launch,
                      testing_cuda_on_cpu=False
                      )
          
