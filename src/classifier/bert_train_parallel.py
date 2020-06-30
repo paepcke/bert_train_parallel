@@ -186,7 +186,8 @@ class BertTrainer(object):
             # Internalize the promised env vars RANK and
             # WORLD_SIZE:
             try:
-                self.node_rank = int(os.environ['RANK'])
+                self.node_rank = int(os.environ['NODE_RANK'])
+                self.dist_rank = int(os.environ['DIST_RANK'])
                 self.world_size = int(os.environ['WORLD_SIZE'])
                 self.master_addr = os.environ['MASTER_ADDR']
                 self.master_port = os.environ['MASTER_PORT']
