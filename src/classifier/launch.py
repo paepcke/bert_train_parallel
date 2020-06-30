@@ -365,7 +365,7 @@ def main():
     
     for local_rank in range(0, world_layout['localhost']):
 
-        dist_rank = other_gpus + local_rank
+        dist_rank = other_gpus * args.node_rank + local_rank
 
         current_env["RANK"] = str(dist_rank)
         current_env["LOCAL_RANK"] = str(local_rank)
