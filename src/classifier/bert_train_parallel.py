@@ -339,7 +339,10 @@ class BertTrainer(object):
     #-------------------
 
     def init_multiprocessing(self):
-        self.log.info("Awaiting master node's response...")
+        if self.node_rank == 0:
+            self.log.info(f"Awaiting {self.world_size} nodes to run...")
+        else:
+            self.log.info("Awaiting master node's response...")
         dist.init_process_group(
             backend='nccl',
             init_method='env://'
