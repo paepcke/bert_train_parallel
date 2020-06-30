@@ -308,8 +308,14 @@ def main():
         #    other_gpus * node_rank
         # but enumerating them matches what would be
         # in a config file if it was used:
-        for prev_node_rank in range(node_rank):
-            world_layout[prev_node_rank] = other_gpus
+        if node_rank == 0:
+            # Master node must know true sum of GPUs:
+            world_layout['others'] = other_gpus
+        else:
+            # All other nodes care only about GPUs
+            # in nodes with lower ranks than themselves:
+            for prev_node_rank in range(node_rank):
+                world_layout[prev_node_rank] = other_gpus
         world_layout['localhost'] = here_gpus
     else:
         # Unequal number of GPUs used in various
@@ -388,7 +394,10 @@ def main():
         processes.append(process)
 
     print(f"********Num processes launched: {len(processes)}")
-    #***********        
+    if node_rank == 0:
+        print(f"Awaiting {sum(world_layout.values())} processes to finish...")
+    else:
+        print(f"Awaiting {world_layout['localhost']} processes to finish...")     
     for process in processes:
         process.wait()
         if process.returncode != 0:
