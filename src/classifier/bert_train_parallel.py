@@ -845,9 +845,9 @@ class BertTrainer(object):
                     total_val_loss += val_loss.item()
 
                 if self.gpu_device != self.CPU_DEV:
-                    logits.cpu()
-                    val_loss.cpu()
-                    b_labels.cpu()
+                    logits = logits.to('cpu')
+                    val_loss = val_loss.to('cpu')
+                    b_labels = b_labels.to('cpu')
                 try:
                     total_val_accuracy += self.accuracy(logits, b_labels)
                 except TrainError as e:
@@ -951,7 +951,7 @@ class BertTrainer(object):
             if self.gpu_device != self.CPU_DEV:
                 logits = logits.to('cpu')
                 b_labels = b_labels.to('cpu')
-                loss.to('cpu')
+                loss = loss.to('cpu')
                 cuda.empty_cache()
 
             # Get the class prediction from the 
