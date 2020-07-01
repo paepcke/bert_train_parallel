@@ -266,6 +266,11 @@ def parse_args():
                              "it directly. Useful when the script is not a Python script, "
                              "or has a #! at the top."
                         )
+    parser.add_argument("-q", "--quiet", 
+                        action='store_true',
+                        help=f"do not print status and other info messages",
+                        default=False
+                        )
 
     # positional
     parser.add_argument("training_script", type=str,
@@ -346,12 +351,13 @@ def main():
 
     if 'OMP_NUM_THREADS' not in os.environ and args.here_gpus > 1:
         current_env["OMP_NUM_THREADS"] = str(1)
-        print("*****************************************\n"
-              "Setting OMP_NUM_THREADS environment variable for each process "
-              "to be {} in default, to avoid your system being overloaded, "
-              "please further tune the variable for optimal performance in "
-              "your application as needed. \n"
-              "*****************************************".format(current_env["OMP_NUM_THREADS"]))
+        if not args.quiet:
+            print("*****************************************\n"
+                  "Setting OMP_NUM_THREADS environment variable for each process "
+                  "to be {} in default, to avoid your system being overloaded, "
+                  "please further tune the variable for optimal performance in "
+                  "your application as needed. \n"
+                  "*****************************************".format(current_env["OMP_NUM_THREADS"]))
 
     # All GPUs in lower ranked nodes (i.e. exclusive
     # the ones in this node:
@@ -394,12 +400,12 @@ def main():
 
         process = subprocess.Popen(cmd, env=current_env)
         processes.append(process)
-
-    print(f"********Num processes launched: {len(processes)}")
-    if node_rank == 0:
-        print(f"Awaiting {sum(world_layout.values())} processes to finish...")
-    else:
-        print(f"Awaiting {world_layout['localhost']} processes to finish...")     
+    if not args.quiet:
+        print(f"Node {args.node_rank} launch.py: Num processes launched: {len(processes)}")
+        if node_rank == 0:
+            print(f"Awaiting {sum(world_layout.values())} processes to finish...")
+        else:
+            print(f"Awaiting {world_layout['localhost']} processes to finish...")     
     for process in processes:
         process.wait()
         if process.returncode != 0:
