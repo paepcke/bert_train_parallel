@@ -155,7 +155,7 @@ class BertResultAnalyzer(object):
         
         res = self.db.execute('''SELECT label, count(*) as label_count
                               FROM TrainQueue LEFT JOIN Samples
-                               ON sample_id = Samples.ROWID
+                               ON TrainQueue.sample_id = TrainQueue.sample_id
                              GROUP BY label;
                         ''')
         label_count_dict_train = {}
@@ -169,7 +169,7 @@ class BertResultAnalyzer(object):
 
         res = self.db.execute('''SELECT label, count(*) as label_count
                               FROM ValidateQueue LEFT JOIN Samples
-                               ON sample_id = Samples.ROWID
+                               ON ValidateQueue.sample_id = Samples.sample_id
                              GROUP BY label;
                         ''')
         
@@ -184,7 +184,7 @@ class BertResultAnalyzer(object):
         
         res = self.db.execute('''SELECT label, count(*) as label_count
                               FROM TestQueue LEFT JOIN Samples
-                               ON sample_id = Samples.ROWID
+                               ON TestQueue.sample_id = Samples.sample_id
                              GROUP BY label;
                         ''')
         
@@ -202,8 +202,8 @@ class BertResultAnalyzer(object):
         true_label_cur = self.db.execute(
                             '''SELECT label AS true_test_label
                                  FROM TestQueue LEFT JOIN Samples
-                                   ON TestQueue.sample_id = Samples.ROWID
-                                ORDER BY Samples.ROWID;
+                                   ON TestQueue.sample_id = Samples.sample_id
+                                ORDER BY Samples.sample_id;
                             ''')
         # Get a list of int-label tuples: [(1,),(3,)...]
         true_labels = true_label_cur.fetchall()
