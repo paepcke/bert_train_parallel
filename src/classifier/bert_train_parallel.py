@@ -15,8 +15,7 @@ import datetime
 import os, sys
 import random
 import time
-
-import numpy as np
+import warnings
 
 import GPUtil
 from apex import amp
@@ -30,11 +29,13 @@ import torch
 from transformers import AdamW, BertForSequenceClassification
 from transformers import get_linear_schedule_with_warmup
 
+from bert_feeder_dataloader import MultiprocessingDataloader
 from bert_feeder_dataloader import SqliteDataLoader
 from bert_feeder_dataset import SqliteDataset
 from logging_service import LoggingService
-from bert_feeder_dataloader import MultiprocessingDataloader
+import numpy as np
 import torch.distributed as dist
+
 
 # Mixed floating point facility (Automatic Mixed Precision)
 # From Nvidia: https://nvidia.github.io/apex/amp.html
@@ -308,8 +309,15 @@ class BertTrainer(object):
         # EVALUATE RESULT:
         # Calculate the MCC
 
-        mcc = self.matthews_corrcoef(predictions, labels)
-        self.log.info(f"Test Matthew's coefficient: {mcc}")
+        with warnings.catch_warnings(record=False) as w:
+            # Suppress the expected warning about the
+            # double scalars:
+            warnings.filterwarnings('ignore',
+                                    message='invalid value encountered in double_scalars',
+                                    category=RuntimeWarning)
+            mcc = self.matthews_corrcoef(predictions, labels)
+        self.log.info(f"Matthews correlation coefficient: {mcc}")
+
         test_accuracy = self.accuracy(predictions, labels)
         self.log.info(f"Accuracy on test set: {test_accuracy}")
         
@@ -765,7 +773,14 @@ class BertTrainer(object):
                         self.history_checkpoint(epoch_i, sample_counter,'post_optimizer')
                         
                     # Update the learning rate.
-                    self.scheduler.step()
+                    with warnings.catch_warnings(record=False):
+                        # Suppress the expected warning about 
+                        # lr_scheduler.step before optimizer.step()...
+                        warnings.filterwarnings('ignore',
+                                    message="Detected call of [`]lr_scheduler.step()[`]*",
+                                    category=UserWarning)
+
+                        self.scheduler.step()
 
                 # Calculate the average loss over all of the batches.
                 avg_train_loss = total_train_loss / len(self.train_dataloader)
