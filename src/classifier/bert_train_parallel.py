@@ -138,6 +138,12 @@ class BertTrainer(object):
         # Don't use any computed results as real:
         self.testing_cuda_on_cpu = testing_cuda_on_cpu
         
+        if label_encodings is None:
+            self.label_encodings = self.LABEL_ENCODINGS
+        else:
+            self.label_encodings = label_encodings
+
+        
         (file_root, ext) = os.path.splitext(csv_or_sqlite_path)
 
         # If told to preponly, but are passed an sqlite file,
@@ -150,12 +156,13 @@ class BertTrainer(object):
         if os.path.exists(file_root + '.sqlite'):
             raise ValueError("Asked to proponly (i.e. create an sqlite db), but an sqlite file exists; remove that first.")
 
-        dataset = self.create_dataset(
-                           csv_or_sqlite_path,
-                           text_col_name,
-                           label_col_name,
-                           sequence_len
-                           )        
+        dataset = self.create_dataset(csv_or_sqlite_path,
+                                      self.label_encodings,
+                                      text_col_name,
+                                      label_col_name,
+                                      sequence_len
+                                      )
+          
         # If only supposed to create the sqlite db, we are done
         if preponly:
             return
@@ -191,11 +198,6 @@ class BertTrainer(object):
         self.batch_size = batch_size
         self.epochs     = epochs
         
-        if label_encodings is None:
-            self.label_encodings = self.LABEL_ENCODINGS
-        else:
-            self.label_encodings = label_encodings
-            
         # The following call also sets self.gpu_obj
         # to a GPUtil.GPU instance, so we can check
         # on the GPU status along the way:
@@ -313,6 +315,7 @@ class BertTrainer(object):
     
     def create_dataset(self, 
                        csv_or_sqlite_path,
+                       label_encodings,
                        text_col_name,
                        label_col_name,
                        sequence_len
@@ -341,14 +344,14 @@ class BertTrainer(object):
                        
         try:
             dataset = SqliteDataset(csv_or_sqlite_path,
-                                    self.label_encodings,
+                                    label_encodings,
                                     text_col_name=text_col_name,
                                     label_col_name=label_col_name,
                                     sequence_len=sequence_len,
                                     )
         except Exception as e:
-            # Not recoverable; error already logged
-            sys.exit(1) 
+            # Not recoverable
+            raise IOError(f"Could not create dataset: {repr(e)}")
 
         # Save the label_encodings dict in a db table,
         # but reversed: int-code ==> label-str
