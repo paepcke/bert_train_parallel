@@ -153,7 +153,7 @@ class BertTrainer(object):
 
         # If preponly, but an sqlite file exists, be cautious,
         # demand that user remove the sqlite file themselves:
-        if os.path.exists(file_root + '.sqlite'):
+        if preponly and os.path.exists(file_root + '.sqlite'):
             raise ValueError("Asked to proponly (i.e. create an sqlite db), but an sqlite file exists; remove that first.")
 
         dataset = self.create_dataset(csv_or_sqlite_path,
