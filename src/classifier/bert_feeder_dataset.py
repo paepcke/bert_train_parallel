@@ -21,8 +21,8 @@ import numpy as np
 from logging_service import LoggingService
 from text_augmentation import TextAugmenter
 
-#****TESTING = False
-TESTING = True
+TESTING = False
+#TESTING = True
 
 # ------------------------------- Class ReadOnlyDataset ----------
 
@@ -560,6 +560,7 @@ class SqliteDataset(FrozenDataset):
                     db.commit()
                     self.log.info(f"Processed {num_processed}/{num_csv_lines} CSV records")
         finally:
+            db.commit()
             csv_fd.close()
 
         return db

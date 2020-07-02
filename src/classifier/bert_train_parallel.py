@@ -120,14 +120,12 @@ class BertTrainer(object):
                  text_col_name='text',
                  label_col_name='label',
                  epochs=4,
-                 #*******
-                 #batch_size=32,
-                 batch_size=2,
-                 #*******
+                 batch_size=32,
                  sequence_len=128,
                  learning_rate=3e-5,
                  label_encodings=None,
                  logfile=None,
+                 preponly=False,
                  started_from_launch=False,
                  testing_cuda_on_cpu=False
                  ):
@@ -139,6 +137,18 @@ class BertTrainer(object):
         # Obviously: only set to True in that situation.
         # Don't use any computed results as real:
         self.testing_cuda_on_cpu = testing_cuda_on_cpu
+        
+        (file_root, ext) = os.path.splitext(csv_or_sqlite_path)
+
+        # If told to preponly, but are passed an sqlite file,
+        # rather than a csv file: treat as error
+        if preponly and ext == '.sqlite':
+            raise ValueError("Asked to proponly (i.e. create an sqlite db), but no .csv file was specified.")
+
+        # If preponly, but an sqlite file exists, be cautious,
+        # demand that user remove the sqlite file themselves:
+        if os.path.exists(file_root + '.sqlite'):
+            raise ValueError("Asked to proponly (i.e. create an sqlite db), but an sqlite file exists; remove that first.")
 
         try:
             self.local_rank = int(os.environ['LOCAL_RANK'])
@@ -227,13 +237,12 @@ class BertTrainer(object):
             self.model_save_path = model_save_path
             
         # Preparation:
-        #**************
+
         if self.testing_cuda_on_cpu:
             self.cuda_dev   = 0
             self.gpu_device = 0
             self.world_size = 3
             self.node_rank  = 0
-        #**************
 
         try:
             dataset = SqliteDataset(csv_or_sqlite_path,
@@ -296,11 +305,12 @@ class BertTrainer(object):
                                                              self.node_rank, 
                                                              batch_size=self.batch_size
                                                              )
+        # If only supposed to create the sqlite db, we are done
+        if preponly:
+            return
 
-        #**************
         if self.testing_cuda_on_cpu:
             self.gpu_device = self.CPU_DEV
-        #**************
 
         # TRAINING:        
         (self.model, self.optimizer, self.scheduler) = self.prepare_model(self.train_dataloader,
@@ -563,10 +573,9 @@ class BertTrainer(object):
             # Measure how long the training epoch takes.
             t0 = time.time()
 
-            #*************
             if self.testing_cuda_on_cpu:
                 self.gpu_device = 0
-            #*************
+
             if self.gpu_device != self.CPU_DEV:
                 # Multiple GPUs are involved. Tell
                 # the sampler that a new epoch is started,
@@ -660,10 +669,10 @@ class BertTrainer(object):
                     #   [0]: input ids 
                     #   [1]: attention masks
                     #   [2]: labels
-                    #**********
+
                     if self.testing_cuda_on_cpu:
                         self.gpu_device = self.CPU_DEV
-                    #**********
+
                     if self.gpu_device == self.CPU_DEV:
                         b_input_ids = batch['tok_ids']
                         b_input_mask = batch['attention_mask']
@@ -895,10 +904,8 @@ class BertTrainer(object):
         # Tracking variables 
         all_predictions , all_labels = [], []
 
-        #***********
         if self.testing_cuda_on_cpu:
             self.gpu_device = self.CPU_DEV
-        #***********
         
         # Predict
         # Batches come as dicts with keys
@@ -923,10 +930,8 @@ class BertTrainer(object):
                                             attention_mask=b_input_mask,
                                             labels=b_labels)
 
-            #***********
             if self.testing_cuda_on_cpu:
                 self.gpu_device = self.CPU_DEV
-            #***********
                     
             # Move logits and labels to CPU, if the
             # are not already:
@@ -958,10 +963,8 @@ class BertTrainer(object):
                     #                                           )}
                 }
 
-        #***********
         if self.testing_cuda_on_cpu:
             self.gpu_device = self.CPU_DEV
-        #***********
 
         if self.gpu_device != self.CPU_DEV:
             del loss
@@ -1256,9 +1259,14 @@ if __name__ == '__main__':
                         help="name of column with the true labels (default: 'label')",
                         default='label'
                         )
+    parser.add_argument('-p','--preponly',
+                        action='store_true',
+                        help="only read csv file, and create sqlite",
+                        default=False
+                        )
     parser.add_argument('--started_from_launch',
                         action='store_true',
-                        help="Use only by launch.py script! Indicate that script started via launch.py",
+                        help="Used only by launch.py script! Indicate that script started via launch.py",
                         default=False
                         )
 
@@ -1269,12 +1277,11 @@ if __name__ == '__main__':
     _pa = BertTrainer(args.data_source_path,
                      text_col_name=args.text,
                      label_col_name=args.labels,
-                     #*********
-                     epochs=1,
-                     #*********
+                     epochs=3,
                      learning_rate=2e-5,
                      batch_size=32,
                      logfile=args.logfile,
+                     preponly=args.preponly,
                      started_from_launch=args.started_from_launch,
                      testing_cuda_on_cpu=False
                      )
