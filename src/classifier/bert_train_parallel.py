@@ -11,7 +11,9 @@ TODO:
 
 from _collections import OrderedDict
 import argparse
+import csv
 import datetime
+import json
 import os, sys
 import random
 import time
@@ -219,8 +221,11 @@ class BertTrainer(object):
             self.init_multiprocessing()
 
         if model_save_path is None:
-            (csv_file_root, _ext) = os.path.splitext(csv_or_sqlite_path)
-            model_save_path = csv_file_root + '_trained_model' + '.sav'
+            (self.csv_file_root, _ext) = os.path.splitext(csv_or_sqlite_path)
+            self.model_save_path = self.csv_file_root + '_trained_model' + '.sav'
+        else:
+            self.model_save_path = model_save_path
+            
         # Preparation:
         #**************
         if self.testing_cuda_on_cpu:
@@ -304,40 +309,11 @@ class BertTrainer(object):
         
         # TESTING:
 
-        (predictions, labels) = self.test()
+        (predictions, true_labels) = self.test()
         
         # EVALUATE RESULT:
-        # Calculate the MCC
 
-        with warnings.catch_warnings(record=False) as w:
-            # Suppress the expected warning about the
-            # double scalars:
-            warnings.filterwarnings('ignore',
-                                    message='invalid value encountered in double_scalars',
-                                    category=RuntimeWarning)
-            mcc = self.matthews_corrcoef(predictions, labels)
-        self.log.info(f"Matthews correlation coefficient: {mcc}")
-
-        test_accuracy = self.accuracy(predictions, labels)
-        self.log.info(f"Accuracy on test set: {test_accuracy}")
-        
-        # Save the model:
-        
-        self.log.info(f"Saving model to {model_save_path} ...")
-        with open(model_save_path, 'wb') as fd:
-            #torch.save(model, fd)
-            torch.save(self.model.state_dict(), fd)
-
-        # Save the test predictions:
-        predictions_path = f"{csv_file_root}_testset_predictions.npy"
-        self.log.info(f"Saving predictions to {predictions_path}")
-        with open(predictions_path, 'wb') as fd:
-            torch.save(predictions, fd)
-        
-        # Save the training stats:
-        training_stats_path = f"{csv_file_root}_train_test_stats.dict"
-        with open(training_stats_path, 'wb') as fd:
-            torch.save(self.training_stats, fd)
+        self.evaluate(predictions, true_labels)
         
 #       Note: To maximize the score, we should now merge the 
 #       validation set back into the train set, and retrain. 
@@ -973,7 +949,7 @@ class BertTrainer(object):
         #matrix_labels = list(self.label_encodings.values())
         self.training_stats['Testing'] = \
                 {
-                    'Test Loss': loss,
+                    'Test Loss': float(loss),
                     'Test Accuracy': self.accuracy(all_predictions, all_labels),
                     'Matthews corrcoef': self.matthews_corrcoef(all_predictions, all_labels)
                     #'Confusion matrix' : self.confusion_matrix(all_predictions, 
@@ -992,6 +968,45 @@ class BertTrainer(object):
             cuda.empty_cache()
 
         return(all_predictions, all_labels)
+
+    #------------------------------------
+    # evaluate 
+    #-------------------
+
+    def evaluate(self, predictions, labels):
+        with warnings.catch_warnings(record=False):
+            # Suppress the expected warning about the
+            # double scalars:
+            warnings.filterwarnings('ignore',
+                                    message='invalid value encountered in double_scalars',
+                                    category=RuntimeWarning)
+            mcc = self.matthews_corrcoef(predictions, labels)
+        self.log.info(f"Matthews correlation coefficient: {mcc}")
+
+        test_accuracy = self.accuracy(predictions, labels)
+        self.log.info(f"Accuracy on test set: {test_accuracy}")
+        
+        # Save the model:
+        
+        self.log.info(f"Saving model to {self.model_save_path} ...")
+        with open(self.model_save_path, 'wb') as fd:
+            #torch.save(model, fd)
+            torch.save(self.model.state_dict(), fd)
+
+        # Save the test predictions and true labels:
+        predictions_path = f"{self.csv_file_root}_testset_predictions.csv"
+        self.log.info(f"Saving predictions to {predictions_path}")
+
+        with open(predictions_path, 'w') as fd:
+            writer = csv.writer(fd)
+            writer.writerow(['prediction', 'true_label'])
+            for pred_truth_tuple in zip(predictions, labels):
+                writer.writerow(pred_truth_tuple)
+        
+        # Save the training stats:
+        training_stats_path = f"{self.csv_file_root}_train_test_stats.json"
+        with open(training_stats_path, 'w') as fd:
+            json.dump(self.training_stats, fd)
 
 
     #------------------------------------

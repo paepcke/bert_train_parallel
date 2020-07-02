@@ -7,18 +7,20 @@ Created on Jun 18, 2020
 
 from _collections import OrderedDict
 import argparse
+import csv
+import json
 import os
 import re
 import sqlite3
 import sys
 
+from sklearn.metrics import classification_report, confusion_matrix
 import torch
 
 from logging_service import LoggingService
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
-from sklearn.metrics import classification_report, confusion_matrix
 
 
 class BertResultAnalyzer(object):
@@ -31,7 +33,7 @@ class BertResultAnalyzer(object):
     # Constructor 
     #-------------------
 
-    def __init__(self, result_file):
+    def __init__(self, result_file, charts=False):
         '''
         Constructor
         '''
@@ -48,21 +50,40 @@ class BertResultAnalyzer(object):
             with open(stats_file, 'rb') as fd:
                 # Load the data struct into cpu RAM, even
                 # if it was on a GPU when it was saved:
-                train_test_stats = torch.load(fd,
-                                              map_location=torch.device('cpu')
-                                              )
+                train_test_stats = json.load(fd)
+                
         except FileNotFoundError:
             self.log.err(f"No train/validate/test stats file found: {stats_file}; quitting")
             sys.exit(1)
 
-        # Get the predictions made for the testset:
+        # Get the predictions made for the testset, 
+        # and the corresponding true labels
         
+        # The file is simple csv:
+        #     prediction,true_label
+        #        0      ,   1
+        #        2      ,   2
+        #         ...
+        # For robustness, don't make assumption about
+        # the column order, but read it from the first
+        # row. We build a two-key dict: {'prediction' : [...],
+        #                                'true_label' : [...]
+        #                               }
+        # The most pythonic method would be to read all
+        # the rows, forming an array of tuples, and then
+        # use the star operator (*). But I have to look
+        # up the semantics of that op every time. So, no.
         try:
-            # Load the train/validate/test stats dict
-            # from the db:
-            stats_file = res_files_dict['preds_file']
-            self.test_predictions = torch.load(stats_file)
-            
+            preds_file = res_files_dict['preds_file']
+            with open(preds_file, 'r') as fd:
+                reader = csv.reader(fd)
+                col_names = next(reader)
+                pred_vs_true_dict = {col_names[0] : [],
+                                     col_names[1] : []
+                                     }
+                for pred_vs_true in reader:
+                    pred_vs_true_dict[col_names[0]].append(int(pred_vs_true[0]))
+                    pred_vs_true_dict[col_names[1]].append(int(pred_vs_true[1]))
         except FileNotFoundError:
             self.log.err(f"No test predictions file found ({res_files_dict['preds_file']})")
             sys.exit(1)
@@ -71,15 +92,18 @@ class BertResultAnalyzer(object):
         db_file = res_files_dict['db_file']
         try:
             self.db = sqlite3.connect(db_file)
+            self.db.row_factory = sqlite3.Row
+            
             # Get ordered dict mapping int labels to
             # text labels:
             
             self.label_encodings = self.get_label_encodings()
 
-            self.get_descriptives(train_test_stats)
+            self.get_descriptives(train_test_stats, pred_vs_true_dict)
      
             # Plot train/val losses by epoch:
-            self.plot_train_val_loss_and_accuracy(train_test_stats)
+            if charts:
+                self.plot_train_val_loss_and_accuracy(train_test_stats)
         finally:
             self.db.close()
 
@@ -87,7 +111,7 @@ class BertResultAnalyzer(object):
     # get_descriptives
     #-------------------
     
-    def get_descriptives(self, train_test_stats): 
+    def get_descriptives(self, train_test_stats, prediction_vs_labels_dict): 
 
         '''
         Given a dict like the following, which was stored
@@ -119,20 +143,13 @@ class BertResultAnalyzer(object):
         
         @param train_test_stats: dict of test and training results
         @type train_test_stats: dict
+        @param prediction_vs_labels_dict: dict with keys 'prediction',
+            and 'true_labels'.
+        @type prediction_vs_labels_dict: {str:[int]}
         '''
 
         # Convenience: pull out the Testing sub-dir:
         test_res_dict = train_test_stats['Testing']
-        #**************
-        # Temporary fix: remove confusion matrix added
-        # to the test_res_dict by older version of 
-        # bert_train_political_leanings.py
-        try:
-            del test_res_dict['Confusion matrix']
-        except:
-            # Wasn't there: dict was created by new version:
-            pass
-        #**************
 
         # Get distribution of labels across the entire dataset,
         # and the train, validation, and test sets:
@@ -148,21 +165,21 @@ class BertResultAnalyzer(object):
         # Build dict: string-label ===> number of samples
         for (int_label, num_this_label) in res:
             # Get str label from int label:
-            str_label = self.label_encodings[str(int_label)]
+            str_label = self.label_encodings[int_label]
             label_count_dict_whole_set[str_label] = num_this_label
             
         # Get train set label distribution:
         
         res = self.db.execute('''SELECT label, count(*) as label_count
                               FROM TrainQueue LEFT JOIN Samples
-                               ON TrainQueue.sample_id = TrainQueue.sample_id
+                               ON TrainQueue.sample_id = Samples.sample_id
                              GROUP BY label;
                         ''')
         label_count_dict_train = {}
         # Build dict: string-label ===> number of samples
         for (int_label, num_this_label) in res:
             # Get str label from int label:
-            str_label = self.label_encodings[str(int_label)]
+            str_label = self.label_encodings[int_label]
             label_count_dict_train[str_label] = num_this_label
 
         # Get validation set label distribution:
@@ -177,7 +194,7 @@ class BertResultAnalyzer(object):
         # Build dict: string-label ===> number of samples
         for (int_label, num_this_label) in res:
             # Get str label from int label:
-            str_label = self.label_encodings[str(int_label)]
+            str_label = self.label_encodings[int_label]
             label_count_dict_validate[str_label] = num_this_label
 
         # Get test set label distribution:
@@ -192,24 +209,10 @@ class BertResultAnalyzer(object):
         # Build dict: string-label ===> number of samples
         for (int_label, num_this_label) in res:
             # Get str label from int label:
-            str_label = self.label_encodings[str(int_label)]
+            str_label = self.label_encodings[int_label]
             label_count_dict_test[str_label] = num_this_label
 
-        
-        # Get the ordered sample ids that were used
-        # for testing, as well as their true labels.
-
-        true_label_cur = self.db.execute(
-                            '''SELECT label AS true_test_label
-                                 FROM TestQueue LEFT JOIN Samples
-                                   ON TestQueue.sample_id = Samples.sample_id
-                                ORDER BY Samples.sample_id;
-                            ''')
-        # Get a list of int-label tuples: [(1,),(3,)...]
-        true_labels = true_label_cur.fetchall()
-        true_labels = [true_label[0] for true_label in true_labels]
-        
-        # Put the remaining test results into 
+        # Put the all test results into 
         # a dataframe for easy printing:
         train_res_df = pd.DataFrame(test_res_dict,
                                     index=[0])
@@ -230,21 +233,27 @@ class BertResultAnalyzer(object):
         
         # Turn confusion matrix numpy into a df
         # with string labels to mark rows and columns:
+        true_labels = prediction_vs_labels_dict['true_label']
+        test_predictions = prediction_vs_labels_dict['prediction']
+        int_labels = list(self.label_encodings.keys())
+        str_labels = list(self.label_encodings.values())
         conf_mat_df = pd.DataFrame(confusion_matrix(true_labels,
-                                                    self.test_predictions
+                                                    test_predictions,
+                                                    labels=int_labels
                                                     ),
-                                   index=self.label_encodings.values(),
-                                   columns=self.label_encodings.values()
+                                   index=str_labels,
+                                   columns=str_labels
                                    )
         # We also produce a conf matrix normalized to 
         # the true values. So each cell is percentage 
         # predicted/true:
         conf_mat_norm_df = pd.DataFrame(confusion_matrix(true_labels,
-                                                         self.test_predictions,
-                                                         normalize='true'
+                                                         test_predictions,
+                                                         normalize='true',
+                                                         labels=int_labels
                                                          ),
-                                                         index=self.label_encodings.values(),
-                                                         columns=self.label_encodings.values(),
+                                                         index=str_labels,
+                                                         columns=str_labels
                                         )
         # Change entries to be 'x.yy%'
         #conf_mat_norm_df = conf_mat_norm_df.applymap(lambda df_el: f"{round(df_el,2)}%")
@@ -269,7 +278,7 @@ class BertResultAnalyzer(object):
         print(conf_mat_norm_df)
         print("")
         result_report = classification_report(true_labels,
-                                              self.test_predictions)
+                                              test_predictions)
         print(result_report)
 
     #------------------------------------
@@ -406,11 +415,17 @@ class BertResultAnalyzer(object):
     
     def get_result_file_paths(self, one_result_file):
         '''
-           facebook_ads_clean_testset_predictions.npy
-           facebook_ads_clean_train_test_stats.dict
-           facebook_ads_clean_trained_model.sav
-           facebook_ads_clean.sqlite
-           facebook_ads_clean.csv
+        Given one of the result files that are produced
+        by bert_train_parallel.py, return a dict with the
+        full paths of them all. For example, given path
+        /foo/bar/facebook_ads.sqlite, constructs path to
+        
+        
+           /foo/bar/facebook_ads_clean_testset_predictions.csv
+           /foo/bar/facebook_ads_clean_train_test_stats.json
+           /foo/bar/facebook_ads_clean_trained_model.sav
+           /foo/bar/facebook_ads_clean.sqlite
+           /foo/bar/facebook_ads_clean.csv
            
         Returns:
                 'preds_file' : file_path,
@@ -419,12 +434,11 @@ class BertResultAnalyzer(object):
                 'db_file'    : file_path
                 }
 
-
         @param one_result_file:
         @type one_result_file:
         '''
-        preds_str = '_testset_predictions.npy'
-        stats_str = '_train_test_stats.dict'
+        preds_str = '_testset_predictions.csv'
+        stats_str = '_train_test_stats.json'
         model_str = '_trained_model.sav'
         db_str    = '.sqlite'
         
@@ -465,7 +479,7 @@ class BertResultAnalyzer(object):
                                         FROM LabelEncodings''')
             while True:
                 (int_label, str_label) = next(cur)
-                label_encodings[int_label] = str_label
+                label_encodings[int(int_label)] = str_label
         except StopIteration:
             return label_encodings
                              
@@ -512,6 +526,11 @@ if __name__ == '__main__':
                         help='Destination of error and info messages; default: stdout.',
                         dest='logfile',
                         default='stdout');
+    parser.add_argument('-c', '--charts',
+                        action='store_true',
+                        default=False,
+                        help="If set various result charts are drawn."
+                        )                        
     parser.add_argument('result_file',
                         help="path to one of the result files of the Bert run; others will be derived from it")
 
@@ -522,8 +541,9 @@ if __name__ == '__main__':
     #***********
 
 
-    BertResultAnalyzer(args.result_file)
+    BertResultAnalyzer(args.result_file, charts=args.charts)
     
-    input("Press ENTER to close the figures and exit...")
+    if args.charts:
+        input("Press ENTER to close the figures and exit...")
 
          
