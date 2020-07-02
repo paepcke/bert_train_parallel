@@ -238,40 +238,23 @@ class BertTrainer(object):
             
         # Preparation:
 
+        dataset = self.create_dataset(
+                           csv_or_sqlite_path,
+                           text_col_name,
+                           label_col_name,
+                           sequence_len
+                           )        
+        # If only supposed to create the sqlite db, we are done
+        if preponly:
+            return
+
         if self.testing_cuda_on_cpu:
             self.cuda_dev   = 0
             self.gpu_device = 0
             self.world_size = 3
             self.node_rank  = 0
 
-        try:
-            dataset = SqliteDataset(csv_or_sqlite_path,
-                                    self.label_encodings,
-                                    text_col_name=text_col_name,
-                                    label_col_name=label_col_name,
-                                    sequence_len=sequence_len,
-                                    )
-        except Exception as e:
-            # Not recoverable; error already logged
-            sys.exit(1) 
-
-        # Save the label_encodings dict in a db table,
-        # but reversed: int-code ==> label-str
-        inverse_label_encs = OrderedDict()
-        for (key, val) in self.label_encodings.items():
-            inverse_label_encs[str(val)] = key
-            
-        dataset.save_dict_to_table('LabelEncodings', 
-                                   inverse_label_encs, 
-                                   delete_existing=True)
-
-        # Split the dataset into train/validate/test,
-        # and create a separate dataloader for each:
-        dataset.split_dataset(train_percent=0.8,
-                              val_percent=0.1,
-                              test_percent=0.1,
-                              random_seed=self.RANDOM_SEED)
-        
+       
         if self.gpu_device == self.CPU_DEV:
 
             # CPU bound, single machine:
@@ -305,10 +288,6 @@ class BertTrainer(object):
                                                              self.node_rank, 
                                                              batch_size=self.batch_size
                                                              )
-        # If only supposed to create the sqlite db, we are done
-        if preponly:
-            return
-
         if self.testing_cuda_on_cpu:
             self.gpu_device = self.CPU_DEV
 
@@ -327,6 +306,67 @@ class BertTrainer(object):
         
 #       Note: To maximize the score, we should now merge the 
 #       validation set back into the train set, and retrain. 
+
+    #------------------------------------
+    # create_dataset
+    #-------------------
+    
+    def create_dataset(self, 
+                       csv_or_sqlite_path,
+                       text_col_name,
+                       label_col_name,
+                       sequence_len
+                       ):
+        '''
+        Takes a csv or sqlite file pointer. If CSV,
+        removes a possibly existing corresponding .sqlite
+        file (same file path as the csv, but with .sqlite
+        extension).
+        
+        If csv file, parse, tokenize, and create an sqlite
+        db with the Bert word indices, and other data needed
+        for training.
+        
+        @param csv_or_sqlite_path:
+        @type csv_or_sqlite_path:
+        @param text_col_name:
+        @type text_col_name:
+        @param label_col_name:
+        @type label_col_name:
+        @param sequence_len:
+        @type sequence_len:
+        @return: dataset instance
+        @rtype: torch.DataSet
+        '''
+                       
+        try:
+            dataset = SqliteDataset(csv_or_sqlite_path,
+                                    self.label_encodings,
+                                    text_col_name=text_col_name,
+                                    label_col_name=label_col_name,
+                                    sequence_len=sequence_len,
+                                    )
+        except Exception as e:
+            # Not recoverable; error already logged
+            sys.exit(1) 
+
+        # Save the label_encodings dict in a db table,
+        # but reversed: int-code ==> label-str
+        inverse_label_encs = OrderedDict()
+        for (key, val) in self.label_encodings.items():
+            inverse_label_encs[str(val)] = key
+            
+        dataset.save_dict_to_table('LabelEncodings', 
+                                   inverse_label_encs, 
+                                   delete_existing=True)
+
+        # Split the dataset into train/validate/test,
+        # and create a separate dataloader for each:
+        dataset.split_dataset(train_percent=0.8,
+                              val_percent=0.1,
+                              test_percent=0.1,
+                              random_seed=self.RANDOM_SEED)
+        return dataset
 
     #------------------------------------
     # init_multiprocessing 
