@@ -150,6 +150,16 @@ class BertTrainer(object):
         if os.path.exists(file_root + '.sqlite'):
             raise ValueError("Asked to proponly (i.e. create an sqlite db), but an sqlite file exists; remove that first.")
 
+        dataset = self.create_dataset(
+                           csv_or_sqlite_path,
+                           text_col_name,
+                           label_col_name,
+                           sequence_len
+                           )        
+        # If only supposed to create the sqlite db, we are done
+        if preponly:
+            return
+
         try:
             self.local_rank = int(os.environ['LOCAL_RANK'])
         except KeyError:
@@ -237,16 +247,6 @@ class BertTrainer(object):
             self.model_save_path = model_save_path
             
         # Preparation:
-
-        dataset = self.create_dataset(
-                           csv_or_sqlite_path,
-                           text_col_name,
-                           label_col_name,
-                           sequence_len
-                           )        
-        # If only supposed to create the sqlite db, we are done
-        if preponly:
-            return
 
         if self.testing_cuda_on_cpu:
             self.cuda_dev   = 0
