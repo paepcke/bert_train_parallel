@@ -14,6 +14,13 @@ from json.decoder import JSONDecodeError
 
 
 r"""
+Based on torch.distributed.launch, with additions by Andreas Paepcke
+Many of the comments are the originals. For more relevant documentation,
+see git@github.com:paepcke/bert_train_parallel.git
+
+o Adds ability to read world configuration from JSON file.
+
+---------------------------------------------
 `torch.distributed.launch` is a module that spawns up multiple distributed
 training processes on each of the training nodes.
 
@@ -150,9 +157,11 @@ will not pass ``--local_rank`` when you specify this flag.
 
 """
 
-
-
 num_gpus_here = len(GPUtil.getGPUs())
+
+#------------------------------------
+# parse_world_layout_config 
+#-------------------
 
 def parse_world_layout_config(other_gpu_config_file, world_layout):  # @UnusedVariable
     '''
@@ -219,6 +228,10 @@ def parse_world_layout_config(other_gpu_config_file, world_layout):  # @UnusedVa
 
     return config_dict
 
+#------------------------------------
+# parse_args 
+#-------------------
+
 def parse_args():
     """
     Helper function parsing the command line options
@@ -282,6 +295,10 @@ def parse_args():
     # Rest of args are for the training program:
     parser.add_argument('training_script_args', nargs=REMAINDER)
     return parser.parse_args()
+
+#------------------------------------
+# main
+#-------------------
 
 def main():
     args = parse_args()
