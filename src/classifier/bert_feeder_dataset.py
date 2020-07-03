@@ -551,7 +551,7 @@ class SqliteDataset(FrozenDataset):
                 num_processed += 1
                 #************
                 if TESTING:
-                    if num_processed >= 100:
+                    if num_processed >= 10000:
                         db.commit()
     
                         break
