@@ -1302,6 +1302,11 @@ if __name__ == '__main__':
                         help="name of column with the true labels (default: 'label')",
                         default='label'
                         )
+    parser.add_argument('-e', '--epochs',
+                        type=int,
+                        help="number of epochs to run through (default: 3)",
+                        default=3
+                        )
     parser.add_argument('-p','--preponly',
                         action='store_true',
                         help="only read csv file, and create sqlite",
@@ -1320,7 +1325,7 @@ if __name__ == '__main__':
     _pa = BertTrainer(args.data_source_path,
                      text_col_name=args.text,
                      label_col_name=args.labels,
-                     epochs=3,
+                     epochs=args.epochs,
                      learning_rate=2e-5,
                      batch_size=32,
                      logfile=args.logfile,
