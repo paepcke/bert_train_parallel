@@ -600,6 +600,8 @@ class BertTrainer(object):
         # Measure the total training time for the whole run.
         total_t0 = time.time()
         
+        self.total_num_batches = round(len(self.train_dataloader) / (self.batch_size * self.world_size))
+        
         # For each epoch...
         for epoch_i in range(0, epochs):
             
@@ -695,13 +697,11 @@ class BertTrainer(object):
                     # Progress update every 50 batches.
                     if sample_counter % 50 == 0 and not sample_counter == 0:
                         # Calculate elapsed time in minutes.
-                        elapsed = self.log.info(f"{self.format_time(time.time() - t0)}") 
+                        elapsed = self.format_time(time.time() - t0)
+                        elapsed = self.log.info(f"Elapsed: {elapsed}") 
                         
                         # Report progress.
-                        self.log.info('  Batch {:>5,}  of  {:>5,}.    Elapsed: {:}.'
-                                      .format(sample_counter, 
-                                              len(self.train_dataloader), 
-                                              elapsed))
+                        self.log_info(f"  Epoch: {epoch_i} Batch {sample_counter} of {self.total_num_batches}")
             
                     # Unpack this training batch from our dataloader. 
                     #

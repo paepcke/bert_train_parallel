@@ -154,6 +154,15 @@ launch.py --node_rank 1 \
           bert_train_parallel.py leanings.sqlite
 ```
 
+### Single Machine--No GPU
+
+This case is primarily relevant for debugging. For example, Macbook
+Pro laptops have no CUDA GPU. Yet for debugging one may wish to run a
+training script. When the launch script encounters this scenario, it
+will spawn a single process of the training script. That script is
+expected to sense the absence of a GPU, and gracefully degrade to CPU
+operation.
+
 ### Configuration File for GPU Use
 
 Instead of specifying on the command line of each machine how many
@@ -259,7 +268,7 @@ Options for `bert_train_parallel.py`:
 ```
 git clone git@github.com:paepcke/bert_train_parallel.git
 ```
-After creating a virtual environment (if desired), 
+After creating a virtual environment (if desired; highly recommended), 
 ```
 python setup.py install
 ```

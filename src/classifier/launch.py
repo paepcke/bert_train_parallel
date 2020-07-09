@@ -163,7 +163,7 @@ num_gpus_here = len(GPUtil.getGPUs())
 # parse_world_layout_config 
 #-------------------
 
-def parse_world_layout_config(other_gpu_config_file, world_layout):  # @UnusedVariable
+def parse_world_layout_config(other_gpu_config_file):
     '''
     Parse JSON config file that describes how many
     GPUs different machines have. Expect any entries
@@ -180,8 +180,6 @@ def parse_world_layout_config(other_gpu_config_file, world_layout):  # @UnusedVa
     
     @param other_gpu_config_file:
     @type other_gpu_config_file:
-    @param world_layout:
-    @type world_layout:
     '''
     try:
         with open(other_gpu_config_file, 'r') as config_fd:
@@ -285,7 +283,7 @@ def parse_args():
                         default=False
                         )
 
-    # positional
+    # Positional
     parser.add_argument("training_script", type=str,
                         help="The full path to the single GPU training "
                              "program/script to be launched in parallel, "
@@ -315,6 +313,7 @@ def main():
     other_gpus = args.other_gpus
     here_gpus  = args.here_gpus
     node_rank  = args.node_rank
+    
     world_layout = {}
     try:
         other_gpus   = int(other_gpus)
@@ -344,10 +343,26 @@ def main():
         # machines. Parse the config file, filling
         # in world_layout with each prior node's 
         # number of GPUs.
-        world_layout = parse_world_layout_config(other_gpus, world_layout)
+        world_layout = parse_world_layout_config(other_gpus)
+
+    # Handle special case: no GPUs anywere, and
+    # we are on node 0: in that case start a single
+    # copy of the training script. If it is written
+    # properly, it will detect the absence of a GPU,
+    # and use the CPU. This happens during debugging
+    # on a laptop:
     
     dist_world_size = sum(world_layout.values())
-    #dist_world_size = args.nproc_per_node * args.nnodes
+    if dist_world_size == 0 and int(node_rank) == 0:
+        world_layout['localhost'] += 1
+        dist_world_size += 1
+    
+    # If trying to launch on a node without GPUs,
+    # when GPUs are available elsewhere, refuse to
+    # start the script:
+    if world_layout['localhost'] == 0:
+        print("This machine does not have any GPU; training script not started.")
+        sys.exit(1)
 
     # If host name was provided instead of an
     # IP address, resolve that:
@@ -387,7 +402,7 @@ def main():
     # the master node, whose numbers are 0,1,...<ngpus_here>:
 
     current_env['NODE_RANK'] = str(args.node_rank)
-    
+
     for local_rank in range(0, world_layout['localhost']):
 
         dist_rank = other_gpus * args.node_rank + local_rank
@@ -395,7 +410,7 @@ def main():
         current_env["RANK"] = str(dist_rank)
         current_env["LOCAL_RANK"] = str(local_rank)
 
-        # spawn the processes
+        # Spawn the process:
         with_python = not args.no_python
         cmd = []
         if with_python:
@@ -417,6 +432,7 @@ def main():
 
         process = subprocess.Popen(cmd, env=current_env)
         processes.append(process)
+    
     if not args.quiet:
         print(f"Node {args.node_rank} launch.py: Num processes launched: {len(processes)}")
         if node_rank == 0:
