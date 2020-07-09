@@ -4,9 +4,13 @@ This pytorch based module starts with a CSV file of at least two
 columns: text snippets, and labels. The text is tokenized and brought
 into a form required by Bert. A Bert model is trained taking the
 values of the labels column as truth. A number of performance tests
-are performed on the results, whose outputs are written to files. A
+are executed on the results, whose outputs are written to files. A
 result reporting tool can create printed and chart format result
 summaries. Summaries include confusion matrix, accuracy, and more.
+
+The training can be distributed over multiple GPUs, on a single
+machine, or multiple ones. As with pytorch DistributedDataParallel,
+the launch script is expected to be run on every involved machine.
 
 ## Special Features
 
