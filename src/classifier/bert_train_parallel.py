@@ -90,9 +90,11 @@ class BertTrainer(object):
     RANDOM_SEED = 3631
     # Modify the following for different, or
     # additional labels (needs testing):
-    LABEL_ENCODINGS=OrderedDict({'right'  : 0,
-                                 'left'   : 1,
-                                 'neutral': 2})
+#     LABEL_ENCODINGS=OrderedDict({'right'  : 0,
+#                                  'left'   : 1,
+#                                  'neutral': 2})
+    LABEL_ENCODINGS=OrderedDict({'0'  : 0,
+                                 '1'   : 1})
 
     # Automatic Mixed Precision optimization setting:
     
@@ -132,6 +134,16 @@ class BertTrainer(object):
         '''
         Number of epochs: 2, 3, 4 
         '''
+        #************
+#         print(f"******WORLD_SIZE:{os.getenv('WORLD_SIZE')}")
+#         print(f"******:RANK:{os.getenv('RANK')}")
+#         print(f"******LOCAL_RANK:{os.getenv('LOCAL_RANK')}")
+#         print(f"******:NODE_RANK:{os.getenv('NODE_RANK')}")
+#         print(f"******:MASTER_ADDR:{os.getenv('MASTER_ADDR')}")
+#         print(f"******:MASTER_PORT:{os.getenv('MASTER_PORT')}")
+#         print("****** Exiting intentionally")
+#         sys.exit()
+        #************
         # Whether or not we are testing GPU related
         # code on a machine that only has a CPU.
         # Obviously: only set to True in that situation.
@@ -241,6 +253,10 @@ class BertTrainer(object):
                 raise TrainError(msg)
             
             self.init_multiprocessing()
+        else:
+            # No GPU on this machine. Consider world_size
+            # to be 1, which is the CPU struggling along:
+            self.world_size = 1
 
         if model_save_path is None:
             (self.csv_file_root, _ext) = os.path.splitext(csv_or_sqlite_path)
@@ -304,6 +320,11 @@ class BertTrainer(object):
         
         # EVALUATE RESULT:
 
+        # If test set was empty:
+        if predictions is None:
+            self.log.info("No performance measures taken, because no predictions available.")
+            return
+        
         self.evaluate(predictions, true_labels)
         
 #       Note: To maximize the score, we should now merge the 
@@ -834,6 +855,15 @@ class BertTrainer(object):
     
     def validate_one_epoch(self, epoch_i):
         
+        # If the number of samples were so few
+        # that no validation set could be created,
+        # do this:
+        
+        if len(self.val_dataloader) == 0:
+            self.log.err("Validation set was empty, because too few samples. No validation done.")
+            # Infinite loss, zero accuracy:
+            return (np.inf, 0)
+        
         try:
             self.log.info("")
             self.log.info("Running Validation...")
@@ -940,7 +970,15 @@ class BertTrainer(object):
         '''
         Apply our fine-tuned model to generate all_predictions on the test set.
         '''
+        # If the number of samples were so few
+        # that no training set could be created,
+        # do this:
         
+        if len(self.test_dataloader) == 0:
+            self.log.err("Test set was empty, because too few samples. No test done.")
+            # No predictions, no labels:
+            return (None, None)
+
         # Put model in evaluation mode
         self.model.eval()
         
