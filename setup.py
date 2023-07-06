@@ -13,7 +13,7 @@ setup(
     # Dependencies on other packages:
     setup_requires   = [],
     install_requires = ['Cython',
-                        'scipy==1.4.1',
+                        'scipy==1.10.0',
                         'torch>=1.5.0',
                         #'keras>=2.3.1',
                         #'tensorflow>=2.2.0',
